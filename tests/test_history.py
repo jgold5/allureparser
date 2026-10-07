@@ -30,7 +30,11 @@ def write_result(run_dir: Path, name: str, status: str, start: int, params=None,
         "parameters": params or [],
     }
     if message:
-        result["statusDetails"] = {"message": message + "\nstack trace line"}
+        result["statusDetails"] = {
+            "message": message,
+            "trace": f"def test_{name}():\n>       assert False\nE       {message}\n\n"
+                     f"tests/test_{name}.py:10: AssertionError",
+        }
     (run_dir / f"{result['uuid']}-result.json").write_text(json.dumps(result))
 
 
@@ -186,7 +190,10 @@ class HistoryTests(unittest.TestCase):
         rows = {t["n"]: t for t in data["tests"]}
         self.assertEqual(rows["suite.flappy"]["s"], "PFP")
         self.assertEqual(rows["suite.flappy"]["k"], 1)
-        self.assertEqual(data["msgs"][rows["suite.flappy"]["m"]["1"]], "boom")
+        self.assertEqual(data["msgs"][rows["suite.flappy"]["m"]["1"]],
+                         "at tests/test_flappy.py:10\nboom")
+        self.assertEqual(data["msgs"][rows["suite.flappy"]["lf"]],
+                         "Failure reasons:\n  1\u00d7 boom  at tests/test_flappy.py:10")
         self.assertIn("suite.<script>alert(1)</script>", rows)
 
     def test_html_retry_and_message_dedup(self):
@@ -201,8 +208,10 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(t["s"], "FPF")
         self.assertEqual(t["a"], {"0": "failed \u2192 failed", "1": "failed \u2192 passed",
                                   "2": "failed \u2192 failed"})
-        self.assertEqual(data["msgs"], ["same error"])
-        self.assertEqual(data["msgs"][t["lf"]], "same error")
+        self.assertEqual(data["msgs"][t["m"]["0"]], "at tests/test_t.py:10\nsame error")
+        self.assertEqual(t["m"]["0"], t["m"]["1"])  # identical details stored once
+        self.assertEqual(data["msgs"][t["lf"]],
+                         "Failure reasons:\n  2\u00d7 same error  at tests/test_t.py:10")
 
     def test_html_empty(self):
         from allure_history.analysis import History
@@ -409,6 +418,63 @@ class HistoryTests(unittest.TestCase):
         rows = list(csv.reader(io.StringIO(render_csv(h))))
         names = {r[0] for r in rows[1:]}
         self.assertEqual(names, {'suite.comma, "quote"', "suite.ünïcødé ✓"})
+
+    # ------------------------------------------------------------ failure details
+
+    def test_multiline_pytest_message_kept(self):
+        msg = ("AssertionError: assert {'a': 1, 'b':...c': [1, 2, 3]} == {'a': 1, 'b':...}\n\n"
+               "Omitting 1 identical items, use -vv to show\nDiffering items:\n"
+               "{'b': 2} != {'b': 3}")
+        write_result(self.root / "r", "t", "failed", start=1, message=msg)
+        h, _ = self.load_quiet()
+        c = h.tests[0].cells[0]
+        self.assertIn("{'b': 2} != {'b': 3}", c.message)
+        self.assertEqual(c.location, "tests/test_t.py:10")
+        self.assertTrue(h.tests[0].last_failure.startswith("AssertionError: assert {'a'"))
+
+    def test_message_caps_and_cleanup(self):
+        from allure_history.loader import MAX_MESSAGE_CHARS, clean_message
+        self.assertEqual(clean_message("a\r\nb\x00c\tz  \n"), "a\nb c    z")
+        long_lines = clean_message("\n".join(f"line {i}" for i in range(100)))
+        self.assertEqual(len(long_lines.splitlines()), 21)
+        self.assertTrue(long_lines.endswith("\u2026"))
+        self.assertLessEqual(len(clean_message("x" * 10_000)), MAX_MESSAGE_CHARS + 2)
+        for junk in (None, 1, [], {}):
+            self.assertEqual(clean_message(junk), "")
+
+    def test_failure_location_parsing(self):
+        from allure_history.loader import failure_location as loc
+        self.assertEqual(loc("...\nE   assert 0\n\ntests/test_a.py:42: AssertionError"),
+                         "tests/test_a.py:42")
+        self.assertEqual(loc("x\n/home/ci/work/app/tests/test_a.py:7: KeyError\n\n"),
+                         "/home/ci/work/app/tests/test_a.py:7")
+        self.assertEqual(loc("x\nC:\\ci\\tests\\test_a.py:3: requests.exceptions.Timeout"),
+                         "C:\\ci\\tests\\test_a.py:3")
+        self.assertEqual(loc("src/pkg/helpers.py:120: Failed"), "src/pkg/helpers.py:120")
+        # Not pytest format: skip tuples, Java stacks, junk
+        self.assertEqual(loc("('/x/test_a.py', 20, 'Skipped: reason')"), "")
+        self.assertEqual(loc("java.lang.AssertionError\n\tat com.x.FooTest.t(FooTest.java:12)"), "")
+        for junk in (None, "", 5, ["a"]):
+            self.assertEqual(loc(junk), "")
+
+    def test_failure_reasons_grouped_and_ranked(self):
+        statuses = ["failed", "passed", "failed", "broken", "failed", "passed"]
+        messages = ["TimeoutError: read timed out", "", "TimeoutError: read timed out",
+                    "ConnectionError: db down", "TimeoutError: read timed out", ""]
+        for i, (st, m) in enumerate(zip(statuses, messages)):
+            write_result(self.root / f"r{i}", "t", st, start=i, message=m)
+        h, _ = self.load_quiet()
+        reasons = [(r.message, r.location, r.count) for r in h.tests[0].failure_reasons]
+        self.assertEqual(reasons, [("TimeoutError: read timed out", "tests/test_t.py:10", 3),
+                                   ("ConnectionError: db down", "tests/test_t.py:10", 1)])
+        data = json.loads(render_json(h))
+        self.assertEqual(data["tests"][0]["failure_reasons"][0],
+                         {"message": "TimeoutError: read timed out",
+                          "location": "tests/test_t.py:10", "count": 3, "last_run": "r4"})
+        self.assertEqual(data["tests"][0]["cells"][3]["location"], "tests/test_t.py:10")
+        page = page_data(render_html(h))
+        self.assertIn("3\u00d7 TimeoutError: read timed out  at tests/test_t.py:10",
+                      page["msgs"][page["tests"][0]["lf"]])
 
 
 if __name__ == "__main__":

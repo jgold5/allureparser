@@ -2,7 +2,8 @@
 discarded after each CI run while the cross-run history is kept.
 
 A snapshot is gzipped JSON holding only what the history needs: each test's identity,
-name, and the status, timing and first message line of every attempt.
+name, and for every attempt its status, timing, failure message (capped) and failure
+location. Stack traces, steps, labels and attachments are not kept.
 """
 
 from __future__ import annotations
@@ -17,10 +18,10 @@ from pathlib import Path
 from typing import Optional
 
 from .loader import (STATUSES, Attempt, Run, TestRun, _dict, _order, _text, _time, _url,
-                     sort_runs)
+                     clean_message, sort_runs)
 
 FORMAT = "allure-history-snapshot"
-VERSION = 1
+VERSION = 2  # 2 added full (capped) messages and failure locations; 1 is still readable
 SUFFIX = ".snapshot.json.gz"
 
 
@@ -38,7 +39,7 @@ def to_dict(run: Run) -> dict:
         "start": run.start,
         "tests": [
             {"k": t.key, "n": t.name,
-             "a": [[a.status, a.start, a.stop, a.message] for a in t.attempts]}
+             "a": [[a.status, a.start, a.stop, a.message, a.location] for a in t.attempts]}
             for t in run.tests.values()
         ],
     }
@@ -100,10 +101,10 @@ def read_snapshot(path: Path) -> Optional[Run]:
         for a in raw_attempts:
             if not isinstance(a, list) or not a:
                 continue
-            a = (a + [None] * 4)[:4]
+            a = (a + [None] * 5)[:5]
             status = a[0] if a[0] in STATUSES else "unknown"
             attempts.append(Attempt(status=status, start=_time(a[1]), stop=_time(a[2]),
-                                    message=_text(a[3])[:300]))
+                                    message=clean_message(a[3]), location=_text(a[4])[:300]))
         if attempts:
             run.tests[key] = TestRun(key=key, name=_text(entry.get("n")) or key,
                                      attempts=attempts)

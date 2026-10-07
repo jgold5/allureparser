@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .loader import Run, TestRun
+from .loader import Run, TestRun, first_line
 
 # Outcome classes used for flip detection. failed and broken both count as "not passing":
 # a test going failed -> broken is still consistently red, not flaky. skipped/unknown are
@@ -22,6 +22,7 @@ class Cell:
     status: Optional[str]  # None when the test did not run in this run
     attempts: list[str] = field(default_factory=list)
     message: str = ""
+    location: str = ""
 
     @property
     def retried(self) -> bool:
@@ -35,6 +36,14 @@ class Cell:
 
 
 @dataclass
+class FailureReason:
+    message: str   # first line of the failure message
+    location: str
+    count: int
+    last_run: int  # index of the most recent run with this failure
+
+
+@dataclass
 class TestHistory:
     key: str
     name: str
@@ -44,7 +53,10 @@ class TestHistory:
     counts: dict[str, int] = field(default_factory=dict)
     in_run_flaky: int = 0
     last_status: Optional[str] = None
-    last_failure: str = ""
+    last_failure: str = ""  # first line of the most recent failure message
+    # Distinct failure causes across runs, most frequent first. A flaky test failing the
+    # same way every time usually has one root cause; many different ones point elsewhere.
+    failure_reasons: list[FailureReason] = field(default_factory=list)
 
     @property
     def runs_present(self) -> int:
@@ -82,8 +94,16 @@ def _score(t: TestHistory) -> None:
     t.last_status = present[-1].status if present else None
     for c in reversed(present):
         if c.status in ("failed", "broken") and c.message:
-            t.last_failure = c.message
+            t.last_failure = first_line(c.message)
             break
+    reasons: dict[tuple[str, str], FailureReason] = {}
+    for i, c in enumerate(t.cells):
+        if c.status in ("failed", "broken"):
+            key = (first_line(c.message), c.location)
+            r = reasons.setdefault(key, FailureReason(key[0], key[1], 0, i))
+            r.count += 1
+            r.last_run = i
+    t.failure_reasons = sorted(reasons.values(), key=lambda r: (-r.count, -r.last_run))
 
 
 def rank_key(t: TestHistory):
@@ -110,6 +130,7 @@ def build_history(runs: list[Run], min_runs: int = 1) -> History:
                     status=tr.status,
                     attempts=[a.status for a in tr.attempts],
                     message=tr.message,
+                    location=tr.location,
                 ))
         th = TestHistory(key=key, name=name, cells=cells)
         _score(th)

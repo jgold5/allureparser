@@ -49,7 +49,8 @@ class Attempt:
     status: str
     start: Optional[int]
     stop: Optional[int]
-    message: str = ""
+    message: str = ""   # failure message, possibly multi-line (capped)
+    location: str = ""  # where it failed, e.g. "tests/test_api.py:42"
 
 
 @dataclass
@@ -67,6 +68,10 @@ class TestRun:
     @property
     def message(self) -> str:
         return self.attempts[-1].message
+
+    @property
+    def location(self) -> str:
+        return self.attempts[-1].location
 
 
 @dataclass
@@ -116,11 +121,42 @@ def _format_params(result: dict) -> str:
     ) + "]"
 
 
-def _first_line(text, limit: int = 300) -> str:
+MAX_MESSAGE_LINES = 20
+MAX_MESSAGE_CHARS = 2000
+_CONTROL_EXCEPT_NEWLINE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]+")
+
+
+def first_line(text: str) -> str:
+    lines = text.strip().splitlines() if isinstance(text, str) else []
+    return lines[0].strip() if lines else ""
+
+
+def clean_message(text) -> str:
+    """Failure message kept multi-line (pytest puts assertion diffs on later lines), with
+    control characters removed and size capped."""
     if not isinstance(text, str):
         return ""
-    lines = text.strip().splitlines()
-    return _text(lines[0])[:limit] if lines else ""
+    text = _CONTROL_EXCEPT_NEWLINE.sub(" ", text.replace("\r\n", "\n").replace("\t", "    "))
+    lines = [line.rstrip() for line in text.strip().split("\n")]
+    truncated = len(lines) > MAX_MESSAGE_LINES
+    out = "\n".join(lines[:MAX_MESSAGE_LINES])
+    if len(out) > MAX_MESSAGE_CHARS:
+        out, truncated = out[:MAX_MESSAGE_CHARS], True
+    return out + ("\n\u2026" if truncated else "")
+
+
+# pytest ends every trace with "path/to/file.py:LINE: ExceptionType"
+_PYTEST_LOCATION = re.compile(r"^(?P<file>\S.*?):(?P<line>\d+): [\w.]+$")
+
+
+def failure_location(trace) -> str:
+    if not isinstance(trace, str):
+        return ""
+    lines = [line.strip() for line in trace.strip().splitlines() if line.strip()]
+    if not lines:
+        return ""
+    m = _PYTEST_LOCATION.match(lines[-1])
+    return _text(f"{m['file']}:{m['line']}")[:300] if m else ""
 
 
 def is_results_dir(path: Path) -> bool:
@@ -227,11 +263,13 @@ def load_run(path: Path, run_id: Optional[str] = None) -> Run:
         status = result.get("status")
         if status not in STATUSES:
             status = "unknown"
+        details = _dict(result.get("statusDetails"))
         attempt = Attempt(
             status=status,
             start=_time(result.get("start")),
             stop=_time(result.get("stop")),
-            message=_first_line(_dict(result.get("statusDetails")).get("message")),
+            message=clean_message(details.get("message")),
+            location=failure_location(details.get("trace")),
         )
         key = identity_key(result)
         grouped.setdefault(key, (display_name(result), []))[1].append(attempt)

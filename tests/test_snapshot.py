@@ -81,7 +81,8 @@ class SnapshotTests(unittest.TestCase):
         run_cli("snapshot", d, "-o", self.hist, "--name", "x")
         raw = gzip.decompress((self.hist / ("x" + SUFFIX)).read_bytes()).decode()
         self.assertNotIn("secret", raw)
-        self.assertNotIn("stack trace line", raw)  # only the first message line is kept
+        self.assertNotIn("assert False", raw)  # trace body is not kept...
+        self.assertIn("tests/test_t.py:10", raw)  # ...only the failure location
         self.assertIn("boom", raw)
 
     def test_much_smaller_than_raw_results(self):
@@ -206,6 +207,26 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(run.tests["ok"].status, "passed")
         h = build_history([run])
         render_text(h, top=0), render_json(h)
+
+    def test_reads_version_1_snapshots(self):
+        self.hist.mkdir()
+        v1 = {"format": "allure-history-snapshot", "version": 1, "label": "#1", "order": 1,
+              "url": None, "start": 5,
+              "tests": [{"k": "h", "n": "pkg.t", "a": [["failed", 5, 6, "boom"]]}]}
+        p = self.hist / ("old" + SUFFIX)
+        p.write_bytes(gzip.compress(json.dumps(v1).encode()))
+        run = read_snapshot(p)
+        self.assertEqual((run.tests["h"].status, run.tests["h"].message,
+                          run.tests["h"].location), ("failed", "boom", ""))
+
+    def test_full_message_and_location_round_trip(self):
+        msg = "AssertionError: assert 503 == 200\n +  where 503 = get_status()"
+        d = self.results("r", {})
+        write_result(d, "t", "failed", start=1, message=msg)
+        run_cli("snapshot", d, "-o", self.hist, "--name", "x")
+        t = next(iter(read_snapshot(self.hist / ("x" + SUFFIX)).tests.values()))
+        self.assertEqual(t.message, msg)
+        self.assertEqual(t.location, "tests/test_t.py:10")
 
     def test_write_is_deterministic_and_atomic(self):
         d = self.results("r", {"t": "failed"})

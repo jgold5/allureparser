@@ -101,8 +101,14 @@ def to_dict(h: History) -> dict:
                 "counts": t.counts,
                 "last_status": t.last_status,
                 "last_failure": t.last_failure,
+                "failure_reasons": [
+                    {"message": r.message, "location": r.location, "count": r.count,
+                     "last_run": h.runs[r.last_run].label}
+                    for r in t.failure_reasons
+                ],
                 "cells": [
-                    {"status": c.status, "attempts": c.attempts, "message": c.message}
+                    {"status": c.status, "attempts": c.attempts, "message": c.message,
+                     "location": c.location}
                     for c in t.cells
                 ],
             }
@@ -199,7 +205,7 @@ _JS = """
   const D = JSON.parse(document.getElementById('history-data').textContent);
   const CLS = {P: 'passed', F: 'failed', B: 'broken', S: 'skipped', '?': 'unknown', '.': 'none'};
   const NAME = {P: 'passed', F: 'failed', B: 'broken', S: 'skipped', '?': 'unknown', '.': 'not run'};
-  const OVERSCAN = 15;
+  const OVERSCAN = 6;
   const wrap = document.querySelector('.wrap');
   const tbody = document.querySelector('tbody');
   const q = document.getElementById('q');
@@ -225,7 +231,7 @@ _JS = """
 
   function row(t) {
     const tr = document.createElement('tr');
-    const name = td('name', '', t.n + (t.lf >= 0 ? '\\n\\nLast failure: ' + D.msgs[t.lf] : ''));
+    const name = td('name', '', t.n + (t.lf >= 0 ? '\\n\\n' + D.msgs[t.lf] : ''));
     if (t.k) {
       const b = document.createElement('span');
       b.className = 'flaky-badge'; b.textContent = 'flaky'; name.appendChild(b);
@@ -249,9 +255,20 @@ _JS = """
     return tr;
   }
 
+  // Height of the scroll area, from its CSS max-height so no layout is forced; falls back
+  // to the window height if the max-height is not a fixed length.
+  let viewportH = 0;
+  function viewport() {
+    if (!viewportH) {
+      const max = parseFloat(getComputedStyle(wrap).maxHeight);
+      viewportH = Math.min(window.innerHeight, isFinite(max) && max > 0 ? max : Infinity);
+    }
+    return viewportH;
+  }
+
   function render(force) {
     const n = view.length;
-    const visible = Math.max(wrap.clientHeight, window.innerHeight);
+    const visible = viewport();
     const start = Math.max(0, Math.min(n, Math.floor(wrap.scrollTop / rowH) - OVERSCAN));
     const end = Math.min(n, start + Math.ceil(visible / rowH) + 2 * OVERSCAN);
     if (!force && start === first && end === last) return;
@@ -271,11 +288,20 @@ _JS = """
   }
 
   function apply(resetScroll) {
-    if (resetScroll) wrap.scrollTop = 0;  // new filter/sort: show the top matches
+    // Setting scrollTop forces a layout, so only do it when needed.
+    if (resetScroll && wrap.scrollTop) wrap.scrollTop = 0;  // new filter/sort: show top matches
     const term = q.value.trim().toLowerCase();
     view = sorted.filter(t => (!only.checked || t.k) && (!term || t.l.includes(term)));
-    count.textContent = view.length;
     render(true);
+    count.textContent = view.length;
+  }
+
+  // Typing fast re-filters at most once per frame.
+  let applyPending = false;
+  function applySoon() {
+    if (applyPending) return;
+    applyPending = true;
+    requestAnimationFrame(() => { applyPending = false; apply(true); });
   }
 
   const KEY = {name: t => t.l, flips: t => t.f, rate: t => t.r, fails: t => t.x};
@@ -298,8 +324,8 @@ _JS = """
     pending = true;
     requestAnimationFrame(() => { pending = false; render(false); });
   });
-  window.addEventListener('resize', () => render(true));
-  q.addEventListener('input', () => apply(true));
+  window.addEventListener('resize', () => { viewportH = 0; render(true); });
+  q.addEventListener('input', applySoon);
   only.addEventListener('change', () => apply(true));
   apply(false);
 })();
@@ -330,13 +356,15 @@ def _page_data(h: History) -> dict:
         for i, c in enumerate(t.cells):
             if c.retried:
                 attempts[i] = " → ".join(c.attempts)
-            if c.message:
-                messages[i] = msg(c.message)
+            detail = "\n".join(x for x in (f"at {c.location}" if c.location else "",
+                                           c.message) if x)
+            if detail:
+                messages[i] = msg(detail)
         entry = {
             "i": rank, "n": t.name, "k": int(t.is_flaky), "f": t.flips,
             "r": round(t.flip_rate, 4), "x": t.counts["failed"] + t.counts["broken"],
             "p": t.runs_present, "s": "".join(_CODE.get(c.status, "?") for c in t.cells),
-            "lf": msg(t.last_failure) if t.last_failure else -1,
+            "lf": msg(_reasons_text(t)) if t.failure_reasons else -1,
         }
         if attempts:
             entry["a"] = attempts
@@ -344,6 +372,16 @@ def _page_data(h: History) -> dict:
             entry["m"] = messages
         tests.append(entry)
     return {"runs": [r.label for r in h.runs], "tests": tests, "msgs": msgs}
+
+
+def _reasons_text(t: TestHistory, limit: int = 5) -> str:
+    lines = ["Failure reasons:"]
+    for r in t.failure_reasons[:limit]:
+        where = f"  at {r.location}" if r.location else ""
+        lines.append(f"  {r.count}× {r.message or '(no message)'}{where}")
+    if len(t.failure_reasons) > limit:
+        lines.append(f"  … and {len(t.failure_reasons) - limit} more")
+    return "\n".join(lines)
 
 
 def _script_json(data) -> str:

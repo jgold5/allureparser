@@ -37,7 +37,8 @@ The HTML report is a single self-contained file. It shows the full matrix with c
 
 - filter the tests by name and turn the **flaky only** filter on or off
 - sort by flips, rate, or failures
-- hover a cell to see the failure message and the order of retries
+- hover a cell to see where it failed (`tests/test_api.py:42`), the full failure message (including pytest's assertion diff), and the order of retries
+- hover a test name to see its distinct failure reasons with counts. One repeated reason usually means one root cause; several different ones point at something environmental
 
 ### Options
 
@@ -61,7 +62,7 @@ python -m allure_history sample-results --html history.html
 
 ## Keeping history small
 
-Raw `allure-results` folders are large because of stack traces, steps, and especially attachments. The history needs none of that. After each CI run, save a **snapshot** (gzipped JSON with only each test's ID, name, status, timings, and the first line of its failure message). Then delete the raw results:
+Raw `allure-results` folders are large because of stack traces, steps, and especially attachments. The history needs none of that. After each CI run, save a **snapshot**, then delete the raw results. A snapshot is gzipped JSON with each test's ID, name, status, and timings, plus the failure message (capped at 20 lines / 2,000 characters) and the failure location (the `file.py:LINE` pytest prints at the end of a traceback). It leaves out the rest of the stack trace, steps, labels, and attachments.
 
 ```bash
 allure-history snapshot allure-results -o history/ \
@@ -71,7 +72,7 @@ allure-history snapshot allure-results -o history/ \
 allure-history history/ --html history.html
 ```
 
-A 3,000-test run takes about 33 KB as a snapshot. 100 runs take 3.6 MB, compared with 1.2 GB of raw results, and the report builds faster (4 s instead of 23 s). Reports built from snapshots are identical to reports built from the raw results.
+A 3,000-test run takes about 33–40 KB as a snapshot, depending on how many tests fail. 100 runs take 3.6 MB, compared with 1.2 GB of raw results, and the report builds faster (4 s instead of 23 s). Reports built from snapshots are identical to reports built from the raw results.
 
 - `--order`, `--label` and `--url` override `executor.json` (`buildOrder`, `buildName`, `buildUrl`), so you don't have to write that file in CI.
 - The file is named `build-<order>.snapshot.json.gz`. Without an order, the name comes from the build name, then the start time. Use `--name` to choose one yourself.
@@ -89,6 +90,7 @@ The `history/` folder has to persist between CI runs. Common places to keep it: 
 - **Retries:** several results with the same `historyId` in one run are treated as retries. The one that started last is the status shown in the cell, as in Allure (attempts with no start time count as oldest). A dot in the cell (or a lowercase letter in the terminal) marks a retried run.
 - **Flips:** the number of times the outcome changes between consecutive runs that have a result. `failed` and `broken` both count as "fail", so going from failed to broken is not a flip. `skipped` and runs where the test is missing are left out entirely.
 - **Flip rate:** flips ÷ (number of pass/fail results − 1). A test that alternates on every run scores 100%.
+- **Failure reasons:** failures are grouped by the first line of the message plus the location, and counted across runs. They appear in the test-name tooltip and as `failure_reasons` in the JSON output.
 - **Flaky:** at least one flip across runs, *or* at least one run where retries both failed and passed.
 - **Ranking:** most flips first, then flip rate, then the number of runs with mixed retries, then the total number of failures.
 

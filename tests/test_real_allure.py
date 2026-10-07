@@ -135,6 +135,17 @@ class RealAllurePytestTests(unittest.TestCase):
                     if ch == "R":
                         self.assertEqual(c.attempts, ["failed", "passed"])
 
+    def test_failure_details(self):
+        got = {self.truth_key(t.name): t for t in self.history.tests}
+        fixture = got["test_fixture_error"].cells[2]
+        self.assertEqual(fixture.message, "RuntimeError: fixture setup exploded")
+        self.assertRegex(fixture.location, r"test_suite\.py:\d+$")
+        alt = got["test_alternating"]
+        self.assertEqual([(r.message, r.count) for r in alt.failure_reasons],
+                         [(f"AssertionError: test_alternating failed in run {i}", 1)
+                          for i in (5, 3, 1)])
+        self.assertTrue(all(r.location.startswith("test_suite.py:") for r in alt.failure_reasons))
+
     def test_ranking(self):
         ranked = [self.truth_key(t.name) for t in self.history.flaky]
         self.assertEqual(ranked[0], "test_alternating")  # 5 flips
