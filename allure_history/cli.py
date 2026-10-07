@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -24,6 +25,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         prog="allure-history",
         description="Build a cross-run test history matrix from Allure results and rank "
                     "flaky tests by how often they flip between pass and fail.",
+        epilog="To save a compact per-run snapshot instead, run 'allure-history snapshot "
+               "--help'. (A results directory literally named 'snapshot' can be passed "
+               "as ./snapshot.)",
     )
     p.add_argument(
         "paths", nargs="+", type=Path,
@@ -87,23 +91,47 @@ def snapshot_main(argv) -> int:
     name = args.name or default_name(run)
     if name.endswith(SUFFIX):
         name = name[: -len(SUFFIX)]
-    if not name or "/" in name or "\\" in name or name in (".", ".."):
-        print(f"error: invalid snapshot name {name!r}", file=sys.stderr)
+    if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*", name):
+        print(f"error: invalid snapshot name {name!r} (use letters, digits, '.', '_', '-')",
+              file=sys.stderr)
         return 1
+    if run.label == run.id and not args.label:
+        # No buildName or --label: the directory name (often "allure-results" in every
+        # run) would make every column look the same.
+        run.label = f"#{run.order}" if run.order is not None else name
     path = args.out / f"{name}{SUFFIX}"
     if path.exists() and not args.force:
         print(f"error: {path} already exists (use --force to overwrite, or --name)",
               file=sys.stderr)
         return 1
-    size = write_snapshot(run, path)
+    try:
+        size = write_snapshot(run, path)
+    except OSError as e:
+        print(f"error: cannot write {path}: {e}", file=sys.stderr)
+        return 1
     print(f"wrote {path} ({len(run.tests)} tests, {size / 1024:.1f} KB)", file=sys.stderr)
     if args.keep:
-        for old in prune(args.out, args.keep):
+        deleted, spared = prune(args.out, args.keep, protect=path)
+        for old in deleted:
             print(f"deleted {old}", file=sys.stderr)
+        if spared:
+            print(f"warning: {path.name} is older than the {args.keep} newest snapshots "
+                  f"(check --order); kept it anyway", file=sys.stderr)
     return 0
 
 
+def _safe_stdio():
+    # e.g. a Windows CI runner with cp1252 output: replace characters it can't show
+    # instead of crashing.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None) -> int:
+    _safe_stdio()
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["snapshot"]:
         return snapshot_main(argv[1:])
@@ -121,8 +149,13 @@ def main(argv=None) -> int:
                          (args.csv, lambda: render_csv(history)),
                          (args.json, lambda: render_json(history))):
         if path:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(render(), encoding="utf-8", newline="")
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", encoding="utf-8", newline="") as f:  # 3.9-compatible
+                    f.write(render())
+            except OSError as e:
+                print(f"error: cannot write {path}: {e}", file=sys.stderr)
+                return 1
             print(f"wrote {path}", file=sys.stderr)
 
     print(render_text(history, top=args.top, flaky_only=not args.all))

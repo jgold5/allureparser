@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -19,11 +20,16 @@ def _dict(value) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _valid_unicode(text: str) -> str:
+    # JSON can carry lone surrogates ("\ud800") that cannot be written out as UTF-8.
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def _text(value) -> str:
     """Scalar JSON value as single-line text; anything else (lists, dicts, null) is ''."""
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return ""
-    return _CONTROL.sub(" ", str(value)).strip()
+    return _CONTROL.sub(" ", _valid_unicode(str(value))).strip()
 
 
 def _time(value) -> Optional[int]:
@@ -98,7 +104,17 @@ def identity_key(result: dict) -> str:
         return history_id
     base = (_text(result.get("fullName")) or _text(result.get("name"))
             or _text(result.get("uuid")) or "?")
-    return f"{base}{_format_params(result)}"
+    # Like Allure's historyId: real values of all non-excluded parameters, including
+    # masked/hidden ones (so distinct variants stay distinct), hashed so that masked
+    # values never appear in the key, which is written to snapshots and JSON output.
+    raw = result.get("parameters")
+    params = [(_text(p.get("name")), _text(p.get("value")))
+              for p in (raw if isinstance(raw, list) else [])
+              if isinstance(p, dict) and p.get("excluded") is not True]
+    if not params:
+        return base
+    digest = hashlib.sha256(json.dumps(params).encode("utf-8")).hexdigest()[:16]
+    return f"{base}#{digest}"
 
 
 def display_name(result: dict) -> str:
@@ -136,13 +152,15 @@ def clean_message(text) -> str:
     control characters removed and size capped."""
     if not isinstance(text, str):
         return ""
-    text = _CONTROL_EXCEPT_NEWLINE.sub(" ", text.replace("\r\n", "\n").replace("\t", "    "))
+    text = _valid_unicode(text).replace("\r\n", "\n").replace("\t", "    ")
+    text = _CONTROL_EXCEPT_NEWLINE.sub(" ", text)
     lines = [line.rstrip() for line in text.strip().split("\n")]
     truncated = len(lines) > MAX_MESSAGE_LINES
     out = "\n".join(lines[:MAX_MESSAGE_LINES])
     if len(out) > MAX_MESSAGE_CHARS:
         out, truncated = out[:MAX_MESSAGE_CHARS], True
-    return out + ("\n\u2026" if truncated else "")
+    # rstrip keeps this idempotent, so messages read back from snapshots are unchanged.
+    return out.rstrip() + ("\n\u2026" if truncated else "")
 
 
 # pytest ends every trace with "path/to/file.py:LINE: ExceptionType"
@@ -238,7 +256,7 @@ def load_run(path: Path, run_id: Optional[str] = None) -> Run:
     if executor_file.is_file():
         try:
             executor = _dict(_read_json(executor_file))
-        except (ValueError, OSError) as e:
+        except (ValueError, OSError, RecursionError) as e:
             print(f"warning: could not read {executor_file}: {e}", file=sys.stderr)
 
     run_id = run_id or path.name
@@ -254,7 +272,7 @@ def load_run(path: Path, run_id: Optional[str] = None) -> Run:
     for f in sorted(path.glob("*-result.json")):
         try:
             result = _read_json(f)
-        except (ValueError, OSError) as e:  # JSONDecodeError and UnicodeDecodeError
+        except (ValueError, OSError, RecursionError) as e:  # bad JSON, bad UTF-8, too deep
             print(f"warning: skipping unreadable {f}: {e}", file=sys.stderr)
             continue
         if not isinstance(result, dict):
@@ -305,7 +323,33 @@ def load_runs(paths: list[Path]) -> list[Run]:
         run = load_run(s, ids[s]) if s.is_dir() else read_snapshot(s)
         if run is not None:
             runs.append(run)
-    return sort_runs(runs)
+    return sort_runs(_drop_duplicate_runs(runs))
+
+
+def _fingerprint(run: Run):
+    return (run.start, tuple(sorted(
+        (k, tuple((a.status, a.start) for a in t.attempts)) for k, t in run.tests.items())))
+
+
+def _drop_duplicate_runs(runs: list[Run]) -> list[Run]:
+    """The same run given twice (e.g. its snapshot and its raw results) counts once. The
+    copy with a build order is kept, since snapshots can carry --order/--label overrides."""
+    kept: dict = {}
+    out = []
+    for run in runs:
+        if run.start is None:  # no timing data: can't tell identical-looking runs apart
+            out.append(run)
+            continue
+        fp = _fingerprint(run)
+        other = kept.get(fp)
+        if other is None:
+            kept[fp] = run
+            continue
+        keep, drop = (run, other) if other.order is None and run.order is not None else (other, run)
+        kept[fp] = keep
+        print(f"warning: {drop.path} is the same run as {keep.path}; using it once",
+              file=sys.stderr)
+    return out + list(kept.values())
 
 
 def sort_runs(runs: list[Run]) -> list[Run]:

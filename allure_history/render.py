@@ -62,17 +62,22 @@ def render_text(h: History, top: int = 20, flaky_only: bool = True) -> str:
 # ---------------------------------------------------------------- csv
 
 
+def _csv_text(value: str) -> str:
+    """Stop spreadsheets from treating names like '=HYPERLINK(...)' as formulas."""
+    return "'" + value if value[:1] in ("=", "+", "-", "@", "\t", "\r") else value
+
+
 def render_csv(h: History) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(
         ["test", "flaky", "flips", "flip_rate", "in_run_flaky", "passed", "failed",
          "broken", "skipped", "runs_present", "last_status"]
-        + [r.label for r in h.runs]
+        + [_csv_text(r.label) for r in h.runs]
     )
     for t in h.tests:
         w.writerow(
-            [t.name, int(t.is_flaky), t.flips, f"{t.flip_rate:.3f}", t.in_run_flaky,
+            [_csv_text(t.name), int(t.is_flaky), t.flips, f"{t.flip_rate:.3f}", t.in_run_flaky,
              t.counts["passed"], t.counts["failed"], t.counts["broken"], t.counts["skipped"],
              t.runs_present, t.last_status or ""]
             + [c.status or "" for c in t.cells]

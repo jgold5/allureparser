@@ -49,7 +49,8 @@ The HTML report is a single self-contained file. It shows the full matrix with c
 | `--min-runs N` | Ignore tests that appear in fewer than N runs |
 | `--top N` | Number of flaky tests to print (0 = all) |
 | `--all` | Print every test in the terminal table, not just flaky ones |
-| `--fail-on-flaky` | Exit with code 2 if any flaky test is found (for CI gates) |
+| `--title TEXT` | Title of the HTML report |
+| `--fail-on-flaky` | Exit with code 2 if any flaky test is found (for CI gates). A test that starts failing and keeps failing (`PPPFFF`) has one flip, so it counts too |
 
 Paths can be `allure-results` folders, snapshot files, or folders containing either. See [Keeping history small](#keeping-history-small).
 
@@ -72,19 +73,21 @@ allure-history snapshot allure-results -o history/ \
 allure-history history/ --html history.html
 ```
 
-A 3,000-test run takes about 33–40 KB as a snapshot, depending on how many tests fail. 100 runs take 3.6 MB, compared with 1.2 GB of raw results, and the report builds faster (4 s instead of 23 s). Reports built from snapshots are identical to reports built from the raw results.
+Measured on a real `allure-pytest` run of 3,000 tests: the raw results hold 1.7 MB of data but use about 12 MB of disk, because each test is its own small file, and that's before any screenshots or logs. The snapshot is about 93 KB, so 100 runs come to roughly 9 MB. Reports also build faster from snapshots, since there are far fewer files to read.
 
-- `--order`, `--label` and `--url` override `executor.json` (`buildOrder`, `buildName`, `buildUrl`), so you don't have to write that file in CI.
-- The file is named `build-<order>.snapshot.json.gz`. Without an order, the name comes from the build name, then the start time. Use `--name` to choose one yourself.
+A report built from snapshots matches one built from the raw results, as long as the runs have the same labels (see `--label` below).
+
+- `--order`, `--label` and `--url` override `executor.json` (`buildOrder`, `buildName`, `buildUrl`), so you don't have to write that file in CI. With neither a label nor a `buildName`, the column label is `#<order>`, or the snapshot name if there's no order.
+- The file is named `build-<order>.snapshot.json.gz`. Without an order, the name comes from the build name, then the start time. Use `--name` to choose one yourself (letters, digits, `.`, `_`, `-`).
 - An existing snapshot is never overwritten unless you pass `--force`.
-- `--keep N` deletes only `*.snapshot.json.gz` files in the output folder. Other files there are left alone.
-- Snapshots and raw results folders can be mixed in one report, e.g. `allure-history history/ allure-results/`. Masked parameter values are never written to a snapshot.
+- `--keep N` deletes only `*.snapshot.json.gz` files in the output folder. Other files there are left alone. It never deletes the snapshot it just wrote; if that snapshot sorts as older than the N newest (e.g. the build counter was reset), it prints a warning.
+- Snapshots and raw results folders can be mixed in one report, e.g. `allure-history history/ allure-results/`. If a run is passed both ways (its snapshot and its raw folder), it's counted once. Masked parameter values are never written to a snapshot.
 
 The `history/` folder has to persist between CI runs. Common places to keep it: a CI cache, a storage bucket (S3 or GCS) synced at the start and end of the job, or a dedicated git branch. Each run adds one small file, so any of these works.
 
 ## How it works
 
-- **Test identity:** Allure's `historyId` (full name plus parameters), the same key Allure uses for its own history. Each parameterized variant gets its own row. If `historyId` is missing, the tool falls back to `fullName` plus parameters.
+- **Test identity:** Allure's `historyId` (full name plus parameters), the same key Allure uses for its own history. Each parameterized variant gets its own row. If `historyId` is missing, the tool falls back to `fullName` plus a hash of the parameter values, so masked variants stay separate without exposing their values.
 - **Parameters:** a parameter marked `masked` in Allure (passwords, tokens) appears as `******`. Parameters marked `hidden` or `excluded` are left out of the name.
 - **Run order:** oldest to newest. It uses `buildOrder` from `executor.json` if every run has one. Otherwise it uses the earliest test start time in each run. A run's column label is `buildName` (or the directory name), linked to `buildUrl`.
 - **Retries:** several results with the same `historyId` in one run are treated as retries. The one that started last is the status shown in the cell, as in Allure (attempts with no start time count as oldest). A dot in the cell (or a lowercase letter in the terminal) marks a retried run.
@@ -106,4 +109,6 @@ python -m unittest discover -s tests
 pip install pytest allure-pytest pytest-rerunfailures
 ```
 
-Malformed result files (bad JSON, wrong field types, a byte-order mark) are skipped or normalized, with a warning. They never stop the report from being built.
+Malformed result files (bad JSON, wrong field types, a byte-order mark, invalid Unicode, extremely deep nesting) are skipped or normalized, with a warning. They never stop the report from being built. On a console that can't display some characters (e.g. a Windows runner using cp1252), those characters are replaced instead of crashing the tool.
+
+CI (`.github/workflows/tests.yml`) runs the suite on Python 3.9 and 3.12, including the `allure-pytest` integration test.

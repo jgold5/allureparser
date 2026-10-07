@@ -73,7 +73,7 @@ def read_snapshot(path: Path) -> Optional[Run]:
     """Load a snapshot as a Run, or None (with a warning) if it is not a valid one."""
     try:
         data = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
-    except (OSError, EOFError, ValueError) as e:  # bad gzip, bad UTF-8, bad JSON
+    except (OSError, EOFError, ValueError, RecursionError) as e:  # bad gzip/UTF-8/JSON
         print(f"warning: skipping unreadable snapshot {path}: {e}", file=sys.stderr)
         return None
     data = _dict(data)
@@ -111,10 +111,18 @@ def read_snapshot(path: Path) -> Optional[Run]:
     return run
 
 
-def prune(directory: Path, keep: int) -> list[Path]:
-    """Delete all but the `keep` newest snapshots directly inside `directory`."""
+def prune(directory: Path, keep: int, protect: Optional[Path] = None) -> tuple[list[Path], bool]:
+    """Delete all but the `keep` newest snapshots directly inside `directory`. `protect`
+    (the snapshot just written) is never deleted, even if it sorts as older. Returns the
+    deleted paths and whether `protect` was spared that way."""
     runs = [r for r in (read_snapshot(p) for p in sorted(directory.glob("*" + SUFFIX))) if r]
-    doomed = sort_runs(runs)[:-keep] if keep > 0 else []
+    ordered = sort_runs(runs)
+    doomed = ordered[:-keep] if keep > 0 else []
+    spared = False
+    if protect is not None:
+        before = len(doomed)
+        doomed = [r for r in doomed if r.path.resolve() != protect.resolve()]
+        spared = len(doomed) < before
     for r in doomed:
         r.path.unlink()
-    return [r.path for r in doomed]
+    return [r.path for r in doomed], spared

@@ -238,6 +238,170 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(a.read_bytes(), b.read_bytes())
         self.assertEqual([p.name for p in a.parent.iterdir()], ["x" + SUFFIX])  # no .tmp left
 
+    # ------------------------------------------------------------ audit regressions
+
+    def test_label_defaults_when_no_executor_or_label(self):
+        # Every CI run's folder is typically called "allure-results"
+        for i in (1, 2):
+            d = self.results(f"ci{i}/allure-results", {"t": "passed"}, start=1000 * i)
+            self.assertEqual(run_cli("snapshot", d, "-o", self.hist, "--order", i)[0], 0)
+        d = self.results("ci3/allure-results", {"t": "passed"}, start=3000)
+        run_cli("snapshot", d, "-o", self.hist, "--name", "nightly-3")
+        with redirect_stderr(io.StringIO()):
+            labels = [r.label for r in load_runs([self.hist])]
+        self.assertEqual(labels, ["#1", "#2", "nightly-3"])
+
+    def test_same_run_as_raw_and_snapshot_counted_once(self):
+        dirs = []
+        for i, status in enumerate(["passed", "failed", "passed"]):
+            dirs.append(self.results(f"b{i}", {"t": status}, start=1000 * (i + 1),
+                                     executor={"buildOrder": i, "buildName": f"#{i}"}))
+            run_cli("snapshot", dirs[-1], "-o", self.hist)
+        with redirect_stderr(io.StringIO()) as err:
+            h = build_history(load_runs([self.hist, dirs[-1]]))
+        self.assertEqual([r.label for r in h.runs], ["#0", "#1", "#2"])
+        self.assertIn("same run", err.getvalue())
+        # Runs without any timing data are never merged, even if they look identical
+        for i in range(2):
+            self.write_untimed(f"u{i}")
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(len(load_runs([self.root / "u0", self.root / "u1"])), 2)
+
+    def write_untimed(self, name):
+        d = self.root / name
+        d.mkdir()
+        (d / "a-result.json").write_text(json.dumps(
+            {"historyId": "h", "fullName": "t", "status": "passed"}))
+
+    def test_keep_never_deletes_the_snapshot_just_written(self):
+        for order in (10, 11, 12):
+            run_cli("snapshot", self.results(f"r{order}", {"t": "passed"}, start=order),
+                    "-o", self.hist, "--order", order)
+        code, _, err = run_cli("snapshot", self.results("late", {"t": "passed"}, start=99),
+                               "-o", self.hist, "--order", 5, "--keep", 2)
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(p.name for p in self.hist.iterdir()),
+                         sorted(f"build-{n}{SUFFIX}" for n in (5, 11, 12)))
+        self.assertIn("older than the 2 newest", err)
+
+    def test_name_validation_and_unwritable_output(self):
+        d = self.results("r", {"t": "passed"})
+        for bad in ("nul\x00byte", "ctrl\x01", "space name", "-leading-dot/..", ".hidden"):
+            code, _, err = run_cli("snapshot", d, "-o", self.hist, f"--name={bad}")
+            self.assertEqual(code, 1, bad)
+            self.assertIn("invalid snapshot name", err)
+        blocker = self.root / "a-file"
+        blocker.write_text("x")
+        code, _, err = run_cli("snapshot", d, "-o", blocker)
+        self.assertEqual(code, 1)
+        self.assertIn("cannot write", err)
+        code, _, err = run_cli(d, "--html", blocker / "out.html")
+        self.assertEqual(code, 1)
+        self.assertIn("cannot write", err)
+
+    def test_message_cleanup_is_idempotent_through_snapshots(self):
+        from allure_history.loader import clean_message
+        samples = ["x" * 1999 + "   tail", "a\n" * 30, "  lead\ttab  \n\n\nend  ",
+                   "y" * 3000, "z\n" * 19 + "w" * 2100]
+        for m in samples:
+            self.assertEqual(clean_message(clean_message(m)), clean_message(m), repr(m[:20]))
+        d = self.results("r", {})
+        write_result(d, "t", "failed", start=1, message=samples[0])
+        run_cli("snapshot", d, "-o", self.hist, "--name", "x")
+        with redirect_stderr(io.StringIO()):
+            raw = load_run(d).tests.popitem()[1].message
+        self.assertEqual(read_snapshot(self.hist / ("x" + SUFFIX)).tests.popitem()[1].message, raw)
+
+
+class AuditRobustnessTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_lone_surrogates_do_not_crash(self):
+        d = self.root / "r"
+        d.mkdir()
+        (d / "a-result.json").write_text(
+            '{"historyId": "h", "fullName": "t\\ud800x", "status": "failed", "start": 1,'
+            ' "statusDetails": {"message": "bad \\udfff here", "trace": "f.py:1: E"},'
+            ' "parameters": [{"name": "p\\ud800", "value": "v\\udc00"}]}')
+        out = self.root / "out"
+        code, stdout, err = run_cli(d, "--html", out / "h.html", "--csv", out / "h.csv",
+                                    "--json", out / "h.json", "--all")
+        self.assertEqual(code, 0, err)
+        self.assertIn("t?x", stdout)
+        self.assertEqual(run_cli("snapshot", d, "-o", self.root / "hist")[0], 0)
+
+    def test_non_utf8_console(self):
+        import os
+        import subprocess
+        import sys
+        d = self.root / "r"
+        write_result(d, "t", "failed", start=1, params=[{"name": "city", "value": "日本"}])
+        write_result(self.root / "s", "t", "passed", start=2,
+                     params=[{"name": "city", "value": "日本"}])
+        env = dict(os.environ, PYTHONIOENCODING="cp1252",
+                   PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+        p = subprocess.run([sys.executable, "-m", "allure_history", str(self.root)],
+                           capture_output=True, env=env, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("cp1252", "replace"))
+        self.assertIn(b"suite.t[city=??]", p.stdout)
+
+    def test_deeply_nested_json_is_skipped(self):
+        d = self.root / "r"
+        write_result(d, "ok", "passed", start=1)
+        (d / "deep-result.json").write_text("[" * 100_000 + "]" * 100_000)
+        (d / "executor.json").write_text("[" * 100_000 + "]" * 100_000)
+        with redirect_stderr(io.StringIO()) as err:
+            runs = load_runs([d])
+        self.assertEqual(list(runs[0].tests), [next(iter(runs[0].tests))])
+        self.assertIn("deep-result.json", err.getvalue())
+        hist = self.root / "hist"
+        hist.mkdir()
+        (hist / ("deep" + SUFFIX)).write_bytes(gzip.compress(b"[" * 100_000 + b"]" * 100_000))
+        with redirect_stderr(io.StringIO()):
+            self.assertIsNone(read_snapshot(hist / ("deep" + SUFFIX)))
+
+    def test_masked_variants_stay_distinct_without_history_id(self):
+        for i in range(2):
+            d = self.root / f"r{i}"
+            d.mkdir()
+            for j, (pw, status) in enumerate((("hunter2", "passed"), ("letmein", "failed"))):
+                (d / f"{j}-result.json").write_text(json.dumps({
+                    "fullName": "pkg.test_login", "status": status, "start": i * 10 + j,
+                    "parameters": [{"name": "pw", "value": pw, "mode": "masked"}]}))
+        with redirect_stderr(io.StringIO()):
+            h = build_history(load_runs([self.root]))
+        self.assertEqual(len(h.tests), 2)
+        self.assertEqual(h.flaky, [])
+        self.assertEqual({t.name for t in h.tests}, {"pkg.test_login[pw=******]"})
+        out = render_json(h)
+        self.assertNotIn("hunter2", out)
+        self.assertNotIn("letmein", out)
+
+    def test_csv_formula_injection_neutralized(self):
+        from allure_history.render import render_csv
+        import csv as csvmod
+        for i, status in enumerate(["passed", "failed"]):
+            d = self.root / f"r{i}"
+            d.mkdir()
+            (d / "a-result.json").write_text(json.dumps({
+                "historyId": "h", "fullName": '=HYPERLINK("http://evil","x")',
+                "status": status, "start": i}))
+            (d / "executor.json").write_text(json.dumps({"buildName": "+cmd", "buildOrder": i}))
+        with redirect_stderr(io.StringIO()):
+            rows = list(csvmod.reader(io.StringIO(render_csv(build_history(load_runs([self.root]))))))
+        self.assertEqual(rows[1][0], "'=HYPERLINK(\"http://evil\",\"x\")")
+        self.assertEqual(rows[0][-1], "'+cmd")
+
+    def test_help_mentions_snapshot(self):
+        with redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            main(["--help"])
+        self.assertIn("allure-history snapshot --help", " ".join(out.getvalue().split()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -137,7 +137,7 @@ class HistoryTests(unittest.TestCase):
         # Directory names sort opposite to buildOrder
         for name, order, status in (("a", 3, "failed"), ("b", 2, "passed"), ("c", 1, "passed")):
             run = self.root / name
-            write_result(run, "t", status, start=1000)
+            write_result(run, "t", status, start=1000 - order)  # start order is the reverse
             (run / "executor.json").write_text(json.dumps(
                 {"buildOrder": order, "buildName": f"#{order}", "buildUrl": f"http://ci/{order}"}))
         h = build_history(load_runs([self.root]))
