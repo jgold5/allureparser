@@ -62,7 +62,7 @@ python -m allure_history sample-results --html history.html
 - **Test identity:** Allure's `historyId` (full name plus parameters), the same key Allure uses for its own history. Each parameterized variant gets its own row. If `historyId` is missing, the tool falls back to `fullName` plus parameters.
 - **Parameters:** a parameter marked `masked` in Allure (passwords, tokens) appears as `******`. Parameters marked `hidden` or `excluded` are left out of the name.
 - **Run order:** oldest to newest. It uses `buildOrder` from `executor.json` if every run has one. Otherwise it uses the earliest test start time in each run. A run's column label is `buildName` (or the directory name), linked to `buildUrl`.
-- **Retries:** several results with the same `historyId` in one run are treated as retries. The last one (by stop time) is the status shown in the cell, as in Allure. A dot in the cell (or a lowercase letter in the terminal) marks a retried run.
+- **Retries:** several results with the same `historyId` in one run are treated as retries. The one that started last is the status shown in the cell, as in Allure (attempts with no start time count as oldest). A dot in the cell (or a lowercase letter in the terminal) marks a retried run.
 - **Flips:** the number of times the outcome changes between consecutive runs that have a result. `failed` and `broken` both count as "fail", so going from failed to broken is not a flip. `skipped` and runs where the test is missing are left out entirely.
 - **Flip rate:** flips ÷ (number of pass/fail results − 1). A test that alternates on every run scores 100%.
 - **Flaky:** at least one flip across runs, *or* at least one run where retries both failed and passed.
