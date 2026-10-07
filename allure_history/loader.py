@@ -127,8 +127,14 @@ def is_results_dir(path: Path) -> bool:
     return path.is_dir() and any(path.glob("*-result.json"))
 
 
+def _is_snapshot_file(path: Path) -> bool:
+    from .snapshot import is_snapshot
+    return is_snapshot(path)
+
+
 def _find_results_dirs(root: Path, _seen: Optional[set] = None) -> list[Path]:
-    """Results dirs at any depth under root, not descending into a results dir once found."""
+    """Results dirs and snapshot files at any depth under root, not descending into a
+    results dir once found."""
     seen = set() if _seen is None else _seen
     real = root.resolve()
     if real in seen:  # symlink loop
@@ -136,29 +142,33 @@ def _find_results_dirs(root: Path, _seen: Optional[set] = None) -> list[Path]:
     seen.add(real)
     if is_results_dir(root):
         return [root]
-    found = []
     try:
-        children = sorted(c for c in root.iterdir() if c.is_dir())
+        entries = sorted(root.iterdir())
     except OSError as e:
         print(f"warning: cannot list {root}: {e}", file=sys.stderr)
         return []
-    for child in children:
-        found.extend(_find_results_dirs(child, seen))
+    found = [e for e in entries if _is_snapshot_file(e)]
+    for child in entries:
+        if child.is_dir():
+            found.extend(_find_results_dirs(child, seen))
     return found
 
 
 def discover_run_dirs(paths: list[Path]) -> list[Path]:
-    """Each path is either a results dir itself, or a directory containing per-run results
-    dirs at any depth (e.g. ci/build-12/allure-results/)."""
+    """Each path is a results dir, a snapshot file, or a directory containing per-run
+    results dirs and/or snapshot files at any depth (e.g. ci/build-12/allure-results/)."""
     found: list[Path] = []
     for p in paths:
-        if p.is_dir():
+        if _is_snapshot_file(p):
+            found.append(p)
+        elif p.is_dir():
             dirs = _find_results_dirs(p)
             if not dirs:
-                print(f"warning: no *-result.json files under {p}", file=sys.stderr)
+                print(f"warning: no *-result.json or snapshot files under {p}", file=sys.stderr)
             found.extend(dirs)
         else:
-            print(f"warning: {p} is not a directory, skipping", file=sys.stderr)
+            print(f"warning: {p} is not a directory or snapshot file, skipping",
+                  file=sys.stderr)
     # De-duplicate while preserving order
     seen: set[Path] = set()
     unique = []
@@ -248,8 +258,15 @@ def _run_ids(dirs: list[Path]) -> list[str]:
 
 
 def load_runs(paths: list[Path]) -> list[Run]:
-    dirs = discover_run_dirs(paths)
-    runs = [load_run(d, run_id) for d, run_id in zip(dirs, _run_ids(dirs))]
+    from .snapshot import read_snapshot
+    sources = discover_run_dirs(paths)
+    dirs = [s for s in sources if s.is_dir()]
+    ids = dict(zip(dirs, _run_ids(dirs)))
+    runs = []
+    for s in sources:
+        run = load_run(s, ids[s]) if s.is_dir() else read_snapshot(s)
+        if run is not None:
+            runs.append(run)
     return sort_runs(runs)
 
 

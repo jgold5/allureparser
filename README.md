@@ -50,12 +50,36 @@ The HTML report is a single self-contained file. It shows the full matrix with c
 | `--all` | Print every test in the terminal table, not just flaky ones |
 | `--fail-on-flaky` | Exit with code 2 if any flaky test is found (for CI gates) |
 
+Paths can be `allure-results` folders, snapshot files, or folders containing either. See [Keeping history small](#keeping-history-small).
+
 To try it on generated sample data:
 
 ```bash
 python examples/make_sample.py sample-results
 python -m allure_history sample-results --html history.html
 ```
+
+## Keeping history small
+
+Raw `allure-results` folders are large because of stack traces, steps, and especially attachments. The history needs none of that. After each CI run, save a **snapshot** (gzipped JSON with only each test's ID, name, status, timings, and the first line of its failure message). Then delete the raw results:
+
+```bash
+allure-history snapshot allure-results -o history/ \
+    --order "$BUILD_NUMBER" --label "#$BUILD_NUMBER" --url "$BUILD_URL" \
+    --keep 200            # optional: delete all but the 200 newest snapshots
+
+allure-history history/ --html history.html
+```
+
+A 3,000-test run takes about 33 KB as a snapshot. 100 runs take 3.6 MB, compared with 1.2 GB of raw results, and the report builds faster (4 s instead of 23 s). Reports built from snapshots are identical to reports built from the raw results.
+
+- `--order`, `--label` and `--url` override `executor.json` (`buildOrder`, `buildName`, `buildUrl`), so you don't have to write that file in CI.
+- The file is named `build-<order>.snapshot.json.gz`. Without an order, the name comes from the build name, then the start time. Use `--name` to choose one yourself.
+- An existing snapshot is never overwritten unless you pass `--force`.
+- `--keep N` deletes only `*.snapshot.json.gz` files in the output folder. Other files there are left alone.
+- Snapshots and raw results folders can be mixed in one report, e.g. `allure-history history/ allure-results/`. Masked parameter values are never written to a snapshot.
+
+The `history/` folder has to persist between CI runs. Common places to keep it: a CI cache, a storage bucket (S3 or GCS) synced at the start and end of the job, or a dedicated git branch. Each run adds one small file, so any of these works.
 
 ## How it works
 
