@@ -11,6 +11,13 @@ from .loader import load_runs
 from .render import render_csv, render_html, render_json, render_text
 
 
+def non_negative(value: str) -> int:
+    n = int(value)
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or greater, got {n}")
+    return n
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="allure-history",
@@ -19,17 +26,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument(
         "paths", nargs="+", type=Path,
-        help="allure-results directories (one per CI run), or parent directories whose "
-             "immediate subdirectories are per-run allure-results directories",
+        help="allure-results directories (one per CI run), or directories containing "
+             "per-run allure-results directories at any depth",
     )
     p.add_argument("--html", type=Path, help="write the interactive HTML matrix to this file")
     p.add_argument("--csv", type=Path, help="write the matrix as CSV to this file")
     p.add_argument("--json", type=Path, help="write the full history as JSON to this file")
-    p.add_argument("--last", type=int, default=0, metavar="N",
+    p.add_argument("--last", type=non_negative, default=0, metavar="N",
                    help="only use the N most recent runs")
-    p.add_argument("--min-runs", type=int, default=1, metavar="N",
+    p.add_argument("--min-runs", type=non_negative, default=1, metavar="N",
                    help="ignore tests that appear in fewer than N runs (default 1)")
-    p.add_argument("--top", type=int, default=20, metavar="N",
+    p.add_argument("--top", type=non_negative, default=20, metavar="N",
                    help="how many flaky tests to print (0 = all, default 20)")
     p.add_argument("--all", action="store_true",
                    help="print all tests in the terminal table, not just flaky ones")

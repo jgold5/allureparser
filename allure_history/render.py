@@ -14,9 +14,12 @@ GLYPH = {"passed": "P", "failed": "F", "broken": "B", "skipped": "S", "unknown":
 
 
 def _run_time(ms) -> str:
-    if not isinstance(ms, (int, float)):
+    if isinstance(ms, bool) or not isinstance(ms, (int, float)):
         return ""
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except (ValueError, OverflowError, OSError):
+        return ""
 
 
 def strip(t: TestHistory) -> str:
@@ -156,13 +159,15 @@ th.run { writing-mode: vertical-rl; transform: rotate(180deg); padding: 8px 4px;
   white-space: nowrap; max-height: 160px; text-align: left; }
 th.run a { color: inherit; text-decoration: none; }
 th.run a:hover { text-decoration: underline; }
-.name { position: sticky; left: 0; background: var(--bg); z-index: 1; padding: 4px 10px;
+.name { position: sticky; left: 0; background: var(--bg); z-index: 1; padding: 0 10px;
+  line-height: 22px;
   max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border-right: 1px solid var(--border); }
-thead .name { z-index: 3; background: var(--head); text-align: left; vertical-align: bottom; }
-.num { padding: 4px 8px; text-align: right; font-variant-numeric: tabular-nums;
+thead .name { z-index: 3; background: var(--head); text-align: left; vertical-align: bottom;
+  padding-bottom: 4px; }
+.num { padding: 0 8px; line-height: 22px; text-align: right; font-variant-numeric: tabular-nums;
   white-space: nowrap; vertical-align: middle; }
-thead .num { vertical-align: bottom; cursor: pointer; user-select: none; }
+thead .num { vertical-align: bottom; cursor: pointer; user-select: none; padding-bottom: 4px; }
 thead .num:hover, thead .name:hover { text-decoration: underline; }
 tbody tr:hover td { background: var(--row-hover); }
 tbody tr:hover td.c { filter: brightness(1.1); }
@@ -173,9 +178,13 @@ td.c.broken { background: var(--broken); } td.c.skipped { background: var(--skip
 td.c.unknown { background: var(--unknown); } td.c.none { color: var(--muted); }
 td.c.retry::after { content: ""; position: absolute; top: 2px; right: 2px; width: 5px;
   height: 5px; border-radius: 50%; background: var(--cell-fg); }
-.flaky-badge { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px;
+.flaky-badge { display: inline-block; font-size: 10px; line-height: 15px; padding: 0 5px;
+  border-radius: 8px;
   background: var(--broken); color: var(--cell-fg); margin-right: 6px; vertical-align: 1px; }
 .empty { padding: 24px; color: var(--muted); }
+tbody tr:not(.spacer) { height: 23px; }
+tr.spacer td { padding: 0; border: 0; height: 0; }
+tr.spacer:hover td { background: none; }
 @media (max-width: 600px) {
   .name { max-width: 45vw; }
   .controls input[type=search] { min-width: 0; width: 100%; }
@@ -184,84 +193,173 @@ td.c.retry::after { content: ""; position: absolute; top: 2px; right: 2px; width
 
 _JS = """
 (function () {
+  // Rows are rendered from the embedded JSON, and only those scrolled into view, so the
+  // page stays fast with thousands of tests x hundreds of runs. All text goes through
+  // textContent/attributes, never innerHTML.
+  const D = JSON.parse(document.getElementById('history-data').textContent);
+  const CLS = {P: 'passed', F: 'failed', B: 'broken', S: 'skipped', '?': 'unknown', '.': 'none'};
+  const NAME = {P: 'passed', F: 'failed', B: 'broken', S: 'skipped', '?': 'unknown', '.': 'not run'};
+  const OVERSCAN = 15;
+  const wrap = document.querySelector('.wrap');
   const tbody = document.querySelector('tbody');
-  const rows = Array.from(tbody.rows);
   const q = document.getElementById('q');
   const only = document.getElementById('flakyOnly');
   const count = document.getElementById('shown');
-  function apply() {
-    const term = q.value.trim().toLowerCase();
-    let n = 0;
-    for (const r of rows) {
-      const show = (!only.checked || r.dataset.flaky === '1') &&
-                   (!term || r.dataset.name.includes(term));
-      r.hidden = !show;
-      if (show) n++;
-    }
-    count.textContent = n;
+  const nCols = 4 + D.runs.length;
+  D.tests.forEach(t => { t.l = t.n.toLowerCase(); });
+
+  let sorted = D.tests.slice(), view = sorted, rowH = 23, measured = false, first = -1, last = -1;
+
+  function spacer() {
+    const tr = document.createElement('tr'), td = document.createElement('td');
+    tr.className = 'spacer'; td.colSpan = nCols; tr.appendChild(td); return tr;
   }
+  const topPad = spacer(), bottomPad = spacer();
+
+  function td(cls, text, title) {
+    const el = document.createElement('td');
+    el.className = cls; el.textContent = text;
+    if (title) el.title = title;
+    return el;
+  }
+
+  function row(t) {
+    const tr = document.createElement('tr');
+    const name = td('name', '', t.n + (t.lf >= 0 ? '\\n\\nLast failure: ' + D.msgs[t.lf] : ''));
+    if (t.k) {
+      const b = document.createElement('span');
+      b.className = 'flaky-badge'; b.textContent = 'flaky'; name.appendChild(b);
+    }
+    name.appendChild(document.createTextNode(t.n));
+    tr.appendChild(name);
+    tr.appendChild(td('num', String(t.f)));
+    tr.appendChild(td('num', Math.round(t.r * 100) + '%'));
+    tr.appendChild(td('num', t.x + '/' + t.p));
+    for (let i = 0; i < t.s.length; i++) {
+      const ch = t.s[i], tip = [D.runs[i], NAME[ch]];
+      let cls = 'c ' + CLS[ch];
+      const att = t.a && t.a[i];
+      if (att) { cls += ' retry'; tip.push('attempts: ' + att); }
+      const m = t.m && t.m[i];
+      if (m !== undefined) tip.push(D.msgs[m]);
+      tr.appendChild(td(cls, ch, tip.join('\\n')));
+    }
+    tr.dataset.name = t.l;
+    tr.dataset.flaky = t.k ? '1' : '0';
+    return tr;
+  }
+
+  function render(force) {
+    const n = view.length;
+    const visible = Math.max(wrap.clientHeight, window.innerHeight);
+    const start = Math.max(0, Math.min(n, Math.floor(wrap.scrollTop / rowH) - OVERSCAN));
+    const end = Math.min(n, start + Math.ceil(visible / rowH) + 2 * OVERSCAN);
+    if (!force && start === first && end === last) return;
+    first = start; last = end;
+    topPad.firstChild.style.height = (start * rowH) + 'px';
+    bottomPad.firstChild.style.height = ((n - end) * rowH) + 'px';
+    const frag = document.createDocumentFragment();
+    frag.appendChild(topPad);
+    for (let i = start; i < end; i++) frag.appendChild(row(view[i]));
+    frag.appendChild(bottomPad);
+    tbody.replaceChildren(frag);
+    if (!measured && end > start) {
+      measured = true;
+      const h = tbody.rows[1].getBoundingClientRect().height;
+      if (h > 0 && Math.abs(h - rowH) > 0.5) { rowH = h; render(true); }
+    }
+  }
+
+  function apply(resetScroll) {
+    if (resetScroll) wrap.scrollTop = 0;  // new filter/sort: show the top matches
+    const term = q.value.trim().toLowerCase();
+    view = sorted.filter(t => (!only.checked || t.k) && (!term || t.l.includes(term)));
+    count.textContent = view.length;
+    render(true);
+  }
+
+  const KEY = {name: t => t.l, flips: t => t.f, rate: t => t.r, fails: t => t.x};
   let sortKey = null, asc = false;
   document.querySelectorAll('th[data-sort]').forEach(th => th.addEventListener('click', () => {
-    const k = th.dataset.sort;
+    const k = th.dataset.sort, get = KEY[k];
     asc = sortKey === k ? !asc : k === 'name';
     sortKey = k;
-    rows.sort((a, b) => {
-      const x = a.dataset[k], y = b.dataset[k];
-      const c = k === 'name' ? x.localeCompare(y) : (parseFloat(x) - parseFloat(y));
-      return asc ? c : -c;
+    sorted = D.tests.slice().sort((a, b) => {
+      const x = get(a), y = get(b);
+      const c = k === 'name' ? x.localeCompare(y) : x - y;
+      return (asc ? c : -c) || a.i - b.i;  // ties keep the flakiness ranking
     });
-    rows.forEach(r => tbody.appendChild(r));
+    apply(true);
   }));
-  q.addEventListener('input', apply);
-  only.addEventListener('change', apply);
-  apply();
+
+  let pending = false;
+  wrap.addEventListener('scroll', () => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; render(false); });
+  });
+  window.addEventListener('resize', () => render(true));
+  q.addEventListener('input', () => apply(true));
+  only.addEventListener('change', () => apply(true));
+  apply(false);
 })();
 """
+
+_CODE = {"passed": "P", "failed": "F", "broken": "B", "skipped": "S", "unknown": "?", None: "."}
 
 
 def _e(s) -> str:
     return html.escape(str(s), quote=True)
 
 
+def _page_data(h: History) -> dict:
+    """Compact matrix for the page script: one status character per run, messages
+    de-duplicated into a lookup table, attempts/messages only for cells that have them."""
+    msgs: list[str] = []
+    msg_index: dict[str, int] = {}
+
+    def msg(text: str) -> int:
+        if text not in msg_index:
+            msg_index[text] = len(msgs)
+            msgs.append(text)
+        return msg_index[text]
+
+    tests = []
+    for rank, t in enumerate(h.tests):
+        attempts, messages = {}, {}
+        for i, c in enumerate(t.cells):
+            if c.retried:
+                attempts[i] = " → ".join(c.attempts)
+            if c.message:
+                messages[i] = msg(c.message)
+        entry = {
+            "i": rank, "n": t.name, "k": int(t.is_flaky), "f": t.flips,
+            "r": round(t.flip_rate, 4), "x": t.counts["failed"] + t.counts["broken"],
+            "p": t.runs_present, "s": "".join(_CODE.get(c.status, "?") for c in t.cells),
+            "lf": msg(t.last_failure) if t.last_failure else -1,
+        }
+        if attempts:
+            entry["a"] = attempts
+        if messages:
+            entry["m"] = messages
+        tests.append(entry)
+    return {"runs": [r.label for r in h.runs], "tests": tests, "msgs": msgs}
+
+
+def _script_json(data) -> str:
+    # Escaping "<" keeps "</script>" or "<!--" inside test names from ending the block.
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False).replace("<", "\\u003c")
+
+
 def render_html(h: History, title: str = "Test History") -> str:
     flaky = h.flaky
-    total_runs = len(h.runs)
     head_cells = []
-    for i, r in enumerate(h.runs, 1):
+    for r in h.runs:
         tip = "\n".join(x for x in (r.label, _run_time(r.start), f"{len(r.tests)} tests") if x)
         label = _e(r.label)
         if r.url:
             label = f'<a href="{_e(r.url)}" target="_blank" rel="noopener">{label}</a>'
         head_cells.append(f'<th class="run" title="{_e(tip)}">{label}</th>')
-
-    body = []
-    for t in h.tests:
-        cells = []
-        for r, c in zip(h.runs, t.cells):
-            cls = c.status or "none"
-            tip = [r.label, c.status or "not run"]
-            if c.retried:
-                cls += " retry"
-                tip.append("attempts: " + " → ".join(c.attempts))
-            if c.message:
-                tip.append(c.message)
-            cells.append(
-                f'<td class="c {cls}" title="{_e(chr(10).join(tip))}">{GLYPH.get(c.status, "?")}</td>'
-            )
-        fails = t.counts["failed"] + t.counts["broken"]
-        badge = '<span class="flaky-badge">flaky</span>' if t.is_flaky else ""
-        name_tip = t.name + (f"\n\nLast failure: {t.last_failure}" if t.last_failure else "")
-        body.append(
-            f'<tr data-name="{_e(t.name.lower())}" data-flaky="{int(t.is_flaky)}" '
-            f'data-flips="{t.flips}" data-rate="{t.flip_rate:.4f}" data-fails="{fails}" '
-            f'data-retry="{t.in_run_flaky}">'
-            f'<td class="name" title="{_e(name_tip)}">{badge}{_e(t.name)}</td>'
-            f'<td class="num">{t.flips}</td>'
-            f'<td class="num">{t.flip_rate:.0%}</td>'
-            f'<td class="num">{fails}/{t.runs_present}</td>'
-            + "".join(cells)
-            + "</tr>"
-        )
 
     legend = "".join(
         f'<span><i style="background:var(--{s})"></i>{s}</span>'
@@ -278,9 +376,9 @@ def render_html(h: History, title: str = "Test History") -> str:
   <th class="num" data-sort="fails" title="Failed or broken runs / runs present">Fails</th>
   {''.join(head_cells)}
 </tr></thead>
-<tbody>
-{chr(10).join(body)}
-</tbody></table></div>"""
+<tbody></tbody></table></div>
+<script id="history-data" type="application/json">{_script_json(_page_data(h))}</script>
+<script>{_JS}</script>"""
     else:
         table = '<div class="empty">No test results found.</div>'
 
@@ -301,7 +399,7 @@ def render_html(h: History, title: str = "Test History") -> str:
 <h1>{_e(title)}</h1>
 <div class="sub">Runs oldest &rarr; newest, left to right{span}</div>
 <div class="stats">
-  <div class="stat"><b>{total_runs}</b><span>runs</span></div>
+  <div class="stat"><b>{len(h.runs)}</b><span>runs</span></div>
   <div class="stat"><b>{len(h.tests)}</b><span>tests</span></div>
   <div class="stat"><b>{len(flaky)}</b><span>flaky tests</span></div>
   <div class="stat"><b>{sum(t.flips for t in flaky)}</b><span>total flips</span></div>
@@ -313,7 +411,6 @@ def render_html(h: History, title: str = "Test History") -> str:
   <span style="color:var(--muted)"><span id="shown">{len(h.tests)}</span> shown</span>
 </div>
 {table}
-<script>{_JS}</script>
 </body>
 </html>
 """

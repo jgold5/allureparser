@@ -6,12 +6,12 @@ Uses only the Python standard library (3.9+).
 
 ## Usage
 
-Give it one `allure-results` directory per CI run. You can also give a parent directory, and each subdirectory of it that holds results counts as one run:
+Give it one `allure-results` directory per CI run. You can also give a parent directory: every directory below it that holds `*-result.json` files counts as one run, at any depth.
 
 ```
 ci-history/
   build-101/   *-result.json, executor.json
-  build-102/
+  build-102/allure-results/   (nested layouts from downloaded CI artifacts work too)
   ...
 ```
 
@@ -33,7 +33,7 @@ flips   rate  retry  history          test
     0     0%      1  ....PPpPPPPPPPP  tests.ui.test_login.test_sso_redirect
 ```
 
-The HTML report is a single self-contained file. It shows the full matrix with color-coded cells, and you can:
+The HTML report is a single self-contained file. It shows the full matrix with color-coded cells. It renders only the rows in view, so it stays fast for large suites: 3,000 tests × 100 runs loads in about half a second as a 700 KB file. You can:
 
 - filter the tests by name and turn the **flaky only** filter on or off
 - sort by flips, rate, or failures
@@ -60,6 +60,7 @@ python -m allure_history sample-results --html history.html
 ## How it works
 
 - **Test identity:** Allure's `historyId` (full name plus parameters), the same key Allure uses for its own history. Each parameterized variant gets its own row. If `historyId` is missing, the tool falls back to `fullName` plus parameters.
+- **Parameters:** a parameter marked `masked` in Allure (passwords, tokens) appears as `******`. Parameters marked `hidden` or `excluded` are left out of the name.
 - **Run order:** oldest to newest. It uses `buildOrder` from `executor.json` if every run has one. Otherwise it uses the earliest test start time in each run. A run's column label is `buildName` (or the directory name), linked to `buildUrl`.
 - **Retries:** several results with the same `historyId` in one run are treated as retries. The last one (by stop time) is the status shown in the cell, as in Allure. A dot in the cell (or a lowercase letter in the terminal) marks a retried run.
 - **Flips:** the number of times the outcome changes between consecutive runs that have a result. `failed` and `broken` both count as "fail", so going from failed to broken is not a flip. `skipped` and runs where the test is missing are left out entirely.
@@ -72,3 +73,11 @@ python -m allure_history sample-results --html history.html
 ```bash
 python -m unittest discover -s tests
 ```
+
+`tests/test_real_allure.py` also runs an end-to-end check that writes results with the real `allure-pytest` plugin and compares the matrix with the expected outcomes. That test is skipped unless its dependencies are installed:
+
+```bash
+pip install pytest allure-pytest pytest-rerunfailures
+```
+
+Malformed result files (bad JSON, wrong field types, a byte-order mark) are skipped or normalized, with a warning. They never stop the report from being built.

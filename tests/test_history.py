@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import csv
+import hashlib
 import io
 import json
 import tempfile
@@ -18,7 +21,7 @@ def write_result(run_dir: Path, name: str, status: str, start: int, params=None,
     run_dir.mkdir(parents=True, exist_ok=True)
     result = {
         "uuid": str(uuid.uuid4()),
-        "historyId": history_id or f"hid-{name}-{params}",
+        "historyId": history_id or hashlib.md5(f"{name}{params}".encode()).hexdigest(),
         "fullName": f"suite.{name}",
         "name": name,
         "status": status,
@@ -29,6 +32,13 @@ def write_result(run_dir: Path, name: str, status: str, start: int, params=None,
     if message:
         result["statusDetails"] = {"message": message + "\nstack trace line"}
     (run_dir / f"{result['uuid']}-result.json").write_text(json.dumps(result))
+
+
+def page_data(page: str) -> dict:
+    """The JSON matrix embedded in the HTML report."""
+    start = page.index('<script id="history-data" type="application/json">')
+    body = page[page.index(">", start) + 1: page.index("</script>", start)]
+    return json.loads(body)
 
 
 def make_runs(root: Path, matrix: dict[str, list[str | None]]) -> Path:
@@ -169,9 +179,36 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(data["tests"][0]["last_failure"], "boom")
 
         page = render_html(h)
-        self.assertIn('class="c failed"', page)
         self.assertNotIn("<script>alert(1)</script>", page)
-        self.assertIn("&lt;script&gt;", page)
+        self.assertEqual(page.count("</script>"), 2)  # data block + page script only
+        data = page_data(page)
+        self.assertEqual(data["runs"], ["run-00", "run-01", "run-02"])
+        rows = {t["n"]: t for t in data["tests"]}
+        self.assertEqual(rows["suite.flappy"]["s"], "PFP")
+        self.assertEqual(rows["suite.flappy"]["k"], 1)
+        self.assertEqual(data["msgs"][rows["suite.flappy"]["m"]["1"]], "boom")
+        self.assertIn("suite.<script>alert(1)</script>", rows)
+
+    def test_html_retry_and_message_dedup(self):
+        for i in range(3):
+            run = self.root / f"r{i}"
+            write_result(run, "t", "failed", start=i * 10, history_id="h", message="same error")
+            write_result(run, "t", "passed" if i == 1 else "failed", start=i * 10 + 5,
+                         history_id="h", message="same error")
+        h, _ = self.load_quiet()
+        data = page_data(render_html(h))
+        t = data["tests"][0]
+        self.assertEqual(t["s"], "FPF")
+        self.assertEqual(t["a"], {"0": "failed \u2192 failed", "1": "failed \u2192 passed",
+                                  "2": "failed \u2192 failed"})
+        self.assertEqual(data["msgs"], ["same error"])
+        self.assertEqual(data["msgs"][t["lf"]], "same error")
+
+    def test_html_empty(self):
+        from allure_history.analysis import History
+        page = render_html(History(runs=[], tests=[]))
+        self.assertIn("No test results found.", page)
+        self.assertNotIn("history-data", page)
 
     def test_cli(self):
         make_runs(self.root, {"flappy": ["passed", "failed", "passed", "failed"],
@@ -189,6 +226,189 @@ class HistoryTests(unittest.TestCase):
     def test_cli_no_results(self):
         with redirect_stderr(io.StringIO()):
             self.assertEqual(main([str(self.root)]), 1)
+
+    # ------------------------------------------------------------ robustness / regressions
+
+    def load_quiet(self, *paths):
+        with redirect_stderr(io.StringIO()) as err:
+            h = build_history(load_runs(list(paths) or [self.root]))
+        return h, err.getvalue()
+
+    def write_raw(self, run: str, name: str, obj):
+        d = self.root / run
+        d.mkdir(parents=True, exist_ok=True)
+        text = obj if isinstance(obj, str) else json.dumps(obj)
+        (d / name).write_text(text, encoding="utf-8")
+
+    def test_malformed_field_types_do_not_crash(self):
+        bad_values = [None, "", 0, 1.5, True, [], {}, [1], {"a": 1}, "x", float("nan"), 10**30]
+        for i, v in enumerate(bad_values):
+            self.write_raw("run-0", f"{i:03d}-result.json", {
+                "historyId": f"h{i}", "fullName": f"t{i}", "status": v, "start": v, "stop": v,
+                "statusDetails": v, "parameters": v,
+            })
+            self.write_raw("run-0", f"{i:03d}b-result.json", {
+                "historyId": f"h{i}", "fullName": f"t{i}", "status": "passed",
+                "statusDetails": {"message": v}, "parameters": [v, {"name": v, "value": v}],
+                "start": "1700000000000", "stop": 5,
+            })
+        self.write_raw("run-0", "executor.json", ["not", "a", "dict"])
+        self.write_raw("run-1", "x-result.json", {"historyId": "h0", "status": "failed",
+                                                  "start": float("inf")})
+        self.write_raw("run-1", "executor.json", {"buildOrder": float("nan"), "buildName": {}})
+        h, _ = self.load_quiet()
+        self.assertEqual(len(h.runs), 2)
+        render_html(h), render_csv(h), render_json(h), render_text(h, top=0)
+
+    def test_non_object_result_and_bom_files(self):
+        self.write_raw("run-0", "a-result.json", "[1, 2, 3]")
+        self.write_raw("run-0", "b-result.json",
+                       "\ufeff" + json.dumps({"historyId": "h", "fullName": "bom", "status": "passed"}))
+        h, err = self.load_quiet()
+        self.assertEqual([t.name for t in h.tests], ["bom"])
+        self.assertIn("not a JSON object", err)
+
+    def test_javascript_build_url_is_dropped(self):
+        write_result(self.root / "r", "t", "passed", start=1)
+        self.write_raw("r", "executor.json", {"buildName": "#1", "buildUrl": "javascript:alert(1)",
+                                              "reportUrl": " JavaScript:alert(2)"})
+        h, _ = self.load_quiet()
+        self.assertIsNone(h.runs[0].url)
+        self.assertNotIn("javascript:", render_html(h).lower())
+
+        write_result(self.root / "s", "t", "passed", start=2)
+        self.write_raw("s", "executor.json", {"buildUrl": "HTTPS://ci.example/2"})
+        h, _ = self.load_quiet()
+        self.assertEqual(h.runs[1].url, "HTTPS://ci.example/2")
+
+    def test_masked_and_excluded_parameters(self):
+        write_result(self.root / "r", "login", "passed", start=1, params=[
+            {"name": "user", "value": "bob"},
+            {"name": "password", "value": "hunter2", "mode": "masked"},
+            {"name": "token", "value": "abc", "mode": "hidden"},
+            {"name": "ts", "value": "123", "excluded": True},
+        ])
+        h, _ = self.load_quiet()
+        self.assertEqual(h.tests[0].name, "suite.login[user=bob, password=******]")
+        for out in (render_html(h), render_csv(h), render_json(h), render_text(h, flaky_only=False)):
+            self.assertNotIn("hunter2", out)
+
+    def test_control_characters_in_names_are_flattened(self):
+        write_result(self.root / "r", "t", "failed", start=1,
+                     params=[{"name": "x", "value": "line1\nline2\ttab"}])
+        write_result(self.root / "s", "t", "passed", start=2,
+                     params=[{"name": "x", "value": "line1\nline2\ttab"}])
+        h, _ = self.load_quiet()
+        self.assertEqual(h.tests[0].name, "suite.t[x=line1 line2 tab]")
+        table_rows = render_text(h).splitlines()[4:]
+        self.assertEqual(len(table_rows), 1)
+
+    def test_retry_order_follows_start_time_like_allure(self):
+        run = self.root / "r"
+        run.mkdir()
+        # Second attempt started later but its stop time is missing; it is still the final one.
+        self.write_raw("r", "a-result.json", {"historyId": "h", "fullName": "t",
+                                              "status": "failed", "start": 100, "stop": 200})
+        self.write_raw("r", "b-result.json", {"historyId": "h", "fullName": "t",
+                                              "status": "passed", "start": 300})
+        # An attempt with no timing at all counts as the oldest.
+        self.write_raw("r", "c-result.json", {"historyId": "h", "fullName": "t",
+                                              "status": "broken"})
+        h, _ = self.load_quiet()
+        self.assertEqual(h.tests[0].cells[0].attempts, ["broken", "failed", "passed"])
+        self.assertEqual(h.tests[0].cells[0].status, "passed")
+
+    def test_nested_run_directories(self):
+        # Typical layout of downloaded CI artifacts: <build>/allure-results/
+        write_result(self.root / "build-1" / "allure-results", "t", "passed", start=1)
+        write_result(self.root / "build-2" / "allure-results", "t", "failed", start=2)
+        write_result(self.root / "deep" / "x" / "y" / "allure-results", "t", "passed", start=3)
+        h, _ = self.load_quiet()
+        self.assertEqual([r.id for r in h.runs],
+                         ["build-1/allure-results", "build-2/allure-results",
+                          "y/allure-results"])
+        self.assertEqual(strip(h.tests[0]), "PFP")
+
+    def test_symlink_loop_does_not_hang(self):
+        write_result(self.root / "a" / "run", "t", "passed", start=1)
+        try:
+            (self.root / "a" / "loop").symlink_to(self.root / "a", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not supported")
+        h, _ = self.load_quiet()
+        self.assertEqual(len(h.runs), 1)
+
+    def test_same_dir_given_twice_is_one_run(self):
+        write_result(self.root / "r", "t", "passed", start=1)
+        h, _ = self.load_quiet(self.root, self.root / "r", self.root / "r" / ".." / "r")
+        self.assertEqual(len(h.runs), 1)
+
+    def test_container_only_and_missing_paths_warn(self):
+        self.write_raw("only-containers", "x-container.json", {"children": []})
+        h, err = self.load_quiet(self.root / "only-containers", self.root / "does-not-exist")
+        self.assertEqual(h.runs, [])
+        self.assertIn("no *-result.json", err)
+        self.assertIn("not a directory", err)
+
+    def test_partial_build_order_falls_back_to_start_time(self):
+        write_result(self.root / "a", "t", "failed", start=5000)
+        self.write_raw("a", "executor.json", {"buildOrder": 1})
+        write_result(self.root / "b", "t", "passed", start=1000)  # no executor.json
+        h, _ = self.load_quiet()
+        self.assertEqual([r.id for r in h.runs], ["b", "a"])
+
+    def test_negative_cli_numbers_rejected(self):
+        write_result(self.root / "r", "t", "passed", start=1)
+        for flag in ("--top", "--last", "--min-runs"):
+            with redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as cm:
+                main([str(self.root), flag, "-1"])
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn("must be 0 or greater", err.getvalue())
+
+    def test_text_top_limit(self):
+        h = self.history({f"t{i}": ["passed", "failed"] for i in range(5)})
+        text = render_text(h, top=2)
+        self.assertIn("... and 3 more", text)
+        self.assertEqual(sum("suite.t" in line for line in text.splitlines()), 2)
+        self.assertEqual(sum("suite.t" in line for line in render_text(h, top=0).splitlines()), 5)
+
+    def test_single_run_and_all_skipped(self):
+        h = self.history({"one": ["failed"], "skip": ["skipped"]})
+        self.assertEqual(h.flaky, [])
+        self.assertIn("No flaky tests found.", render_text(h))
+        self.assertEqual({t.flip_rate for t in h.tests}, {0.0})
+
+    def test_unknown_status(self):
+        h = self.history({"weird": ["passed", "unknown", "failed"]})
+        t = h.tests[0]
+        self.assertEqual(strip(t), "P?F")
+        self.assertEqual(t.flips, 1)  # unknown is ignored like skipped
+        self.assertEqual(page_data(render_html(h))["tests"][0]["s"], "P?F")
+
+    def test_name_change_uses_latest_name(self):
+        write_result(self.root / "r1", "old_name", "passed", start=1, history_id="same")
+        write_result(self.root / "r2", "new_name", "failed", start=2, history_id="same")
+        h, _ = self.load_quiet()
+        self.assertEqual([t.name for t in h.tests], ["suite.new_name"])
+        self.assertEqual(strip(h.tests[0]), "PF")
+
+    def test_missing_history_id_falls_back_to_name_and_params(self):
+        for i, status in enumerate(["passed", "failed"]):
+            self.write_raw(f"r{i}", "a-result.json", {
+                "fullName": "pkg.t", "status": status, "start": i,
+                "parameters": [{"name": "x", "value": "1"}]})
+            self.write_raw(f"r{i}", "b-result.json", {
+                "fullName": "pkg.t", "status": "passed", "start": i,
+                "parameters": [{"name": "x", "value": "2"}]})
+        h, _ = self.load_quiet()
+        self.assertEqual(len(h.tests), 2)
+        self.assertEqual([t.name for t in h.flaky], ["pkg.t[x=1]"])
+
+    def test_csv_round_trip_with_awkward_names(self):
+        h = self.history({'comma, "quote"': ["passed", "failed"], "ünïcødé ✓": ["passed"] * 2})
+        rows = list(csv.reader(io.StringIO(render_csv(h))))
+        names = {r[0] for r in rows[1:]}
+        self.assertEqual(names, {'suite.comma, "quote"', "suite.ünïcødé ✓"})
 
 
 if __name__ == "__main__":
