@@ -5,3 +5,4 @@ dist/
 /history.*
 /sample-results/
 /sample-output/
+/.claude/worktrees/
