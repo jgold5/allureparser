@@ -119,6 +119,13 @@ class PerExecutionTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             main([str(self.big), "--per-run", "--per-execution"])
 
+    def test_version_flag(self):
+        from allure_history import __version__
+        with redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as cm:
+            main(["--version"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertEqual(out.getvalue().strip(), f"allure-history {__version__}")
+
     def test_outputs(self):
         self.add("t", "passed", 1_700_000_000_000)
         self.add("t", "failed", 1_700_000_060_000, message="AssertionError: nope")

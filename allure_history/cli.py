@@ -7,6 +7,7 @@ import re
 import sys
 from pathlib import Path
 
+from . import __version__
 from .analysis import build_execution_history, build_history
 from .loader import _url, load_run, load_runs
 from .render import render_csv, render_html, render_json, render_text
@@ -29,6 +30,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                "--help'. (A results directory literally named 'snapshot' can be passed "
                "as ./snapshot.)",
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument(
         "paths", nargs="+", type=Path,
         help="allure-results directories (one per CI run), snapshot files, or directories "

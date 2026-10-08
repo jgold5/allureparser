@@ -17,6 +17,7 @@ ci-history/
 
 ```bash
 pip install .            # or run in place with: python -m allure_history ...
+allure-history --version # check which version is installed
 allure-history ci-history/ --html history.html --csv history.csv --json history.json
 ```
 
