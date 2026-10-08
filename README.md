@@ -34,7 +34,7 @@ flips   rate  retry  history          test
     0     0%      1  ....PPpPPPPPPPP  tests.ui.test_login.test_sso_redirect
 ```
 
-The HTML report is a single self-contained file. It shows the full matrix with color-coded cells. It renders only the rows in view, so it stays fast for large suites: 3,000 tests × 100 runs loads in about half a second as a 700 KB file. You can:
+The HTML report is a single self-contained file. It shows the full matrix with color-coded cells. It renders only the rows in view, so it stays fast for large suites: 3,000 tests × 100 runs (300,000 results) is a 3–6 MB file that loads in under a second. You can:
 
 - filter the tests by name and turn the **flaky only** filter on or off
 - sort by flips, rate, or failures

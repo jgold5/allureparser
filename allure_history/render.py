@@ -864,7 +864,7 @@ def render_html(h: History, title: str = "Test History") -> str:
   <span class="legend">{legend}</span>
   <span style="color:var(--muted)"><span id="shown">{len(h.tests)}</span> shown</span>
 </div>
-<!-- before {table}: the page script inside it looks this panel up -->
+<!-- must come before the matrix: the page script inside it looks this panel up -->
 <aside id="detail" role="dialog" aria-label="Execution details" hidden>
   <div class="dhead">
     <button type="button" id="dprev" title="Previous execution of this test (&larr;)">&larr;</button>
