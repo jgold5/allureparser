@@ -84,6 +84,7 @@ class History:
     per_execution: bool = False
     executions: int = 0  # total test executions (per-execution mode)
     detected_runs: list = field(default_factory=list)  # runs.DetectedRun, per-execution mode
+    notes: list = field(default_factory=list)  # notes.Note, from the notes file
 
     @property
     def flaky(self) -> list[TestHistory]:

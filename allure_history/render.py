@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from .analysis import History, TestHistory
 from .loader import first_line
+from .notes import NOTES_FILE, visible
 
 GLYPH = {"passed": "P", "failed": "F", "broken": "B", "skipped": "S", "unknown": "?", None: "."}
 
@@ -112,20 +113,28 @@ def render_text(h: History, top: int = 20, flaky_only: bool = True, runs_shown: 
         return "\n".join(lines + _runs_text(h, runs_shown))
 
     shown = rows[:top] if top else rows
+    noted: dict[str, int] = {}
+    for n in visible(h.notes):
+        noted[n.test] = noted.get(n.test, 0) + 1
+
+    def name(t: TestHistory) -> str:
+        n = noted.get(t.key, 0)
+        return f"{t.name}  ({n} note{'' if n == 1 else 's'})" if n else t.name
+
     if h.per_execution:
         hist = {id(t): strip(t, limit=60).lstrip(".") for t in shown}
         width = max(max(len(s) for s in hist.values()), len("history"))
         lines.append(f"{'flips':>5}  {'rate':>5}  {'execs':>5}  {'history':>{width}}  test")
         for t in shown:
             lines.append(f"{t.flips:>5}  {t.flip_rate:>5.0%}  {t.runs_present:>5}  "
-                         f"{hist[id(t)]:>{width}}  {t.name}")
+                         f"{hist[id(t)]:>{width}}  {name(t)}")
     else:
         width = max(len(strip(t)) for t in shown)
         lines.append(f"{'flips':>5}  {'rate':>5}  {'retry':>5}  {'history':<{width}}  test")
         for t in shown:
             lines.append(
                 f"{t.flips:>5}  {t.flip_rate:>5.0%}  {t.in_run_flaky:>5}  "
-                f"{strip(t):<{width}}  {t.name}"
+                f"{strip(t):<{width}}  {name(t)}"
             )
     if top and len(rows) > top:
         lines.append(f"... and {len(rows) - top} more (use --top 0 to show all)")
@@ -220,6 +229,7 @@ def render_json(h: History) -> str:
     data = to_dict(h)
     if h.per_execution:
         data["runs_detected"] = _runs_dict(h)
+    data["notes"] = [n.to_dict() for n in visible(h.notes)]
     return json.dumps(data, indent=2)
 
 
@@ -230,14 +240,14 @@ _CSS = """
   --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de; --head: #f6f8fa;
   --row-hover: #f3f6fa; --mark: #fff3a3;
   --passed: #2da44e; --failed: #cf222e; --broken: #d4a72c; --skipped: #8c959f;
-  --unknown: #8250df; --none: transparent; --cell-fg: #ffffff;
+  --unknown: #8250df; --none: transparent; --cell-fg: #ffffff; --note: #1f2328;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --border: #30363d; --head: #161b22;
     --row-hover: #1c2129; --mark: #6b5a14;
     --passed: #238636; --failed: #da3633; --broken: #bb8009; --skipped: #484f58;
-    --unknown: #8957e5;
+    --unknown: #8957e5; --note: #f0f6fc;
   }
 }
 * { box-sizing: border-box; }
@@ -342,6 +352,34 @@ td.name { cursor: pointer; }
   color: var(--cell-fg); line-height: 18px; }
 .chip.passed { background: var(--passed); } .chip.failed { background: var(--failed); }
 .chip.broken { background: var(--broken); } .chip.skipped { background: var(--skipped); }
+/* notes: a folded top-left corner on cells (the retry dot is top-right), a count by names */
+td.c.noted::before { content: ""; position: absolute; top: 0; left: 0; width: 0; height: 0;
+  border-top: 9px solid var(--note); border-right: 9px solid transparent; }
+.nbadge { display: inline-block; font-size: 10px; line-height: 13px; padding: 0 4px;
+  border-radius: 8px; border: 1px solid var(--muted); color: var(--fg); margin-right: 6px;
+  vertical-align: 1px; font-weight: 600; }
+.notesbar { display: flex; gap: 4px 10px; flex-wrap: wrap; align-items: center;
+  margin: -4px 0 12px; font-size: 12px; }
+.notesbar .muted { color: var(--muted); }
+.notesbar .link { color: inherit; text-decoration: underline; cursor: pointer; background: none;
+  border: 0; padding: 0; font: inherit; }
+.tbtn:disabled { opacity: .5; cursor: default; }
+.note { border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; margin: 0 0 8px; }
+.note.unsaved { border-style: dashed; }
+.nmeta { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; font-size: 12px;
+  color: var(--muted); margin-bottom: 4px; }
+.nmeta b { color: var(--fg); font-weight: 600; }
+.nact { margin-left: auto; display: inline-flex; gap: 10px; }
+.ntext { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tag { font-size: 11px; line-height: 16px; border-radius: 8px; padding: 0 6px;
+  border: 1px solid var(--border); background: var(--head); color: var(--fg); }
+.tag.unsaved { background: var(--mark); border-color: transparent; }
+#dbody textarea, #dbody input, #dbody select { font: inherit; color: var(--fg);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
+#dbody textarea { display: block; width: 100%; min-height: 64px; resize: vertical; }
+.nrow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.nrow input { flex: 1 1 120px; min-width: 0; }
+.nadd { margin-bottom: 8px; }
 tbody tr:not(.spacer) { height: 23px; }
 tr.spacer td { padding: 0; border: 0; height: 0; }
 tr.spacer:hover td { background: none; }
@@ -401,6 +439,8 @@ _JS = """
 
   let sorted = D.tests.slice(), view = [], rowH = 23, measured = false, first = -1, last = -1;
   let sel = null;  // {t, c}: the cell shown in the detail panel
+  let shownIn = null;  // {t, c}: what the panel shows (c is null for a test summary)
+  let noteCell = new Map(), noteTest = new Map(), noteRun = new Map();  // see indexNotes
   const collapsed = new Set();  // file paths whose group is collapsed
 
   // ---- fuzzy search: every space-separated term must match, as a substring or as
@@ -492,6 +532,11 @@ _JS = """
       const b = document.createElement('span');
       b.className = 'flaky-badge'; b.textContent = 'flaky'; name.appendChild(b);
     }
+    if (t.nn) {
+      const b = el('span', 'nbadge', '\\u270e ' + t.nn);
+      b.title = t.nn + (t.nn === 1 ? ' note' : ' notes');
+      name.appendChild(b);
+    }
     const tn = el('span', 'tn');
     const hits = t.hit ? new Set(t.hit.filter(k => k >= t.snStart && k < t.snEnd)) : null;
     if (hits && hits.size) {
@@ -527,6 +572,8 @@ _JS = """
       if (o !== undefined) tip.push('at ' + D.msgs[o]);
       const m = t.m && t.m[i];
       if (m !== undefined) tip.push(D.msgs[m]);
+      const nc = noteCell.get(t.i + ':' + i);
+      if (nc) { cls += ' noted'; tip.push(nc.length + (nc.length === 1 ? ' note' : ' notes')); }
       let cell;
       // Per-execution mode: '.' just pads shorter timelines, so leave it blank.
       if (ch === '.' && D.pe) cell = td(cls, '', '');
@@ -596,7 +643,7 @@ _JS = """
   function apply(resetScroll) {
     // Setting scrollTop forces a layout, so only do it when needed.
     if (resetScroll && wrap.scrollTop) wrap.scrollTop = 0;  // new filter/sort: show top matches
-    const terms = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const terms = q.value.trim().toLowerCase().split(/\\s+/).filter(Boolean);
     let tests = [], hiddenMatches = 0;
     for (const t of sorted) {
       let m = null;
@@ -750,6 +797,7 @@ _JS = """
 
   function showCell(t, i) {
     sel = {t: t, c: i};
+    shownIn = {t: t, c: i};
     const code = t.s[i];
     body.replaceChildren();
     body.appendChild(chip(code));
@@ -769,6 +817,7 @@ _JS = """
       body.appendChild(el('div', 'sec', 'Message'));
       body.appendChild(el('pre', '', D.msgs[t.m[i]]));
     }
+    cellNotes(t, i);
     body.appendChild(el('div', 'sec', 'This test overall'));
     const sdl = el('dl');
     field(sdl, 'Flips', t.f + ' (' + Math.round(t.r * 100) + '% of chances)');
@@ -784,6 +833,7 @@ _JS = """
 
   function showTest(t) {
     sel = null;
+    shownIn = {t: t, c: null};
     body.replaceChildren();
     body.appendChild(el('h3', '', t.sn));
     body.appendChild(el('div', 'fullname', t.n));
@@ -802,6 +852,10 @@ _JS = """
       b.addEventListener('click', () => showCell(t, idx[idx.length - 1]));
       const p = el('p'); p.appendChild(b); body.appendChild(p);
     }
+    const all = noteTest.get(t.i) || [];
+    body.appendChild(el('div', 'sec', all.length ? 'Notes (' + all.length + ')' : 'Notes'));
+    all.forEach(v => body.appendChild(noteItem(v, t, null, false)));
+    body.appendChild(addBox(t, null));
     posEl.textContent = '';
     prevB.hidden = nextB.hidden = true;
     openPanel();
@@ -813,7 +867,7 @@ _JS = """
     document.getElementById('dclose').focus({preventScroll: true});
   }
   function closePanel() {
-    panel.hidden = true; sel = null; markSelected();
+    panel.hidden = true; sel = null; shownIn = null; markSelected();
   }
   function step(dir) {
     if (!sel) return;
@@ -841,11 +895,455 @@ _JS = """
   document.getElementById('dclose').addEventListener('click', closePanel);
   document.addEventListener('keydown', e => {
     if (panel.hidden) return;
+    if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) && body.contains(e.target)) {
+      if (e.key === 'Escape') e.target.blur();  // keep the draft; a second Esc closes
+      return;
+    }
     if (e.key === 'Escape') closePanel();
     else if (e.target === q) return;
     else if (e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
     else if (e.key === 'ArrowRight') { step(1); e.preventDefault(); }
   });
+
+  // ---- notes: from the notes file (D.notes, embedded when the report was built,
+  // tombstones of deleted notes included), plus notes added, edited or deleted here.
+  // Those are "pending" in localStorage until saved into the notes file: directly where
+  // the browser can write files (File System Access API), else as a downloaded export
+  // that the next allure-history run merges in. Note text only goes through textContent.
+  const STORE = 'allure-history-notes:' + D.nk, AUTHOR = 'allure-history-author';
+  const FSA = typeof window.showSaveFilePicker === 'function';
+  const saveB = document.getElementById('saveNotes');
+  const modeEl = document.getElementById('nmode'), msgEl = document.getElementById('nmsg');
+  const byKey = new Map(D.tests.map(t => [t.h, t]));
+
+  // Storage can be blocked (private mode, policies): then notes last while the page is open.
+  function load(key) {
+    try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
+  }
+  function keep(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
+  }
+
+  // The rules of notes.py (parse_note, newer, merge_notes), so that saving here and
+  // merging there produce the same file: union by id, the newest 'updated' wins, ties
+  // go to the larger canonical JSON, and deletions are tombstones.
+  function str1(v, cap) {
+    if (typeof v !== 'string' && !(typeof v === 'number' && isFinite(v))) return '';
+    return String(v).replace(/[\\x00-\\x1f\\x7f]+/g, ' ').trim().slice(0, cap);
+  }
+  function noteText(v) {
+    if (typeof v !== 'string') return '';
+    return v.replace(/\\r\\n/g, '\\n').replace(/\\t/g, '    ')
+      .replace(/[\\x00-\\x08\\x0b-\\x1f\\x7f]+/g, ' ').trim().slice(0, 10000);
+  }
+  function msTime(v) {
+    return typeof v === 'number' && isFinite(v) && v >= 0 && v < 1e14 ? Math.trunc(v) : null;
+  }
+  function parseNote(e) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
+    const id = str1(e.id, 100), test = str1(e.test, 1000), name = str1(e.name, 1000);
+    const execution = msTime(e.execution), run = msTime(e.run), created = str1(e.created, 40);
+    const updated = str1(e.updated, 40) || created;
+    if (e.deleted === true) {
+      if (!id) return null;
+      const n = {id: id, deleted: true, updated: updated};
+      if (test) n.test = test;
+      if (name) n.name = name;
+      if (execution !== null) n.execution = execution;
+      if (run !== null) n.run = run;
+      if (created) n.created = created;
+      return n;
+    }
+    const text = noteText(e.text);
+    // notes.py derives an id for hand-written notes without one; here they are left in
+    // the file as they are, like any other entry that isn't a valid note.
+    if (!id || !test || !text) return null;
+    return {id: id, test: test, name: name, execution: execution, run: run, text: text,
+            author: str1(e.author, 200), created: created, updated: updated};
+  }
+  function stamp(s) {
+    const v = s ? Date.parse(/(Z|[+-]\\d\\d:\\d\\d)$/i.test(s) ? s : s + 'Z') : NaN;
+    return isNaN(v) ? -Infinity : v;
+  }
+  function canonical(n) { return JSON.stringify(n, Object.keys(n).sort()); }
+  function newer(a, b) {
+    const x = stamp(a.updated), y = stamp(b.updated);
+    if (x !== y) return x > y ? a : b;
+    return canonical(b) > canonical(a) ? b : a;
+  }
+  function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+  function parseList(entries) {
+    const m = new Map();
+    for (const e of entries) {
+      const n = parseNote(e);
+      if (n) m.set(n.id, m.has(n.id) ? newer(m.get(n.id), n) : n);
+    }
+    return m;
+  }
+  function mergeNotes(current, incoming) {
+    const merged = new Map(current.map(n => [n.id, n]));
+    const counts = {added: 0, updated: 0, deleted: 0, unchanged: 0};
+    for (const n of incoming) {
+      const before = merged.get(n.id), after = before ? newer(before, n) : n;
+      merged.set(n.id, after);
+      if (before && canonical(before) === canonical(after)) counts.unchanged++;
+      else if (after.deleted) counts.deleted++;
+      else if (!before) counts.added++;
+      else counts.updated++;
+    }
+    const notes = [...merged.values()].sort((a, b) =>
+      cmp(a.created || '', b.created || '') || cmp(a.id, b.id));
+    return {notes: notes, counts: counts};
+  }
+  // A notes file's entries merged with notes: what gets written back.
+  function mergeFile(raw, incoming) {
+    const r = mergeNotes([...parseList(raw).values()], incoming);
+    r.entries = r.notes.concat(raw.filter(e => !parseNote(e)));
+    return r;
+  }
+  // For scripts (and the test comparing this merge with notes.py's)
+  window.allureHistoryNotes = {parseNote: parseNote, parseList: parseList, mergeFile: mergeFile};
+
+  const embedded = parseList(D.notes);
+  const local = load(STORE) || {};
+  // saved: what this page wrote into the notes file since the report was built
+  const saved = parseList(Array.isArray(local.saved) ? local.saved : []);
+  const pend = parseList(Array.isArray(local.pending) ? local.pending : []);
+  let base;  // the notes file as far as this page knows
+  function settle() {
+    // Once the report is regenerated with a change in it, it is no longer pending.
+    base = new Map(embedded);
+    for (const [id, n] of [...saved]) {
+      const e = embedded.get(id);
+      if (e && stamp(e.updated) >= stamp(n.updated)) saved.delete(id); else base.set(id, n);
+    }
+    for (const [id, n] of [...pend]) {
+      const e = base.get(id);
+      if (e && stamp(e.updated) >= stamp(n.updated)) pend.delete(id);
+    }
+  }
+  function persist() {
+    if (!keep(STORE, {pending: [...pend.values()], saved: [...saved.values()]}) && pend.size) {
+      say('This browser blocks storage, so unsaved notes last only while this page is open.');
+    }
+  }
+  function say(text) { msgEl.textContent = text; }
+
+  function runOf(t, i) { return D.pe ? (t.u && t.u[i]) || null : i; }
+  function runStart(t, i) {
+    const r = runOf(t, i);
+    return r === null ? null : msTime(D.pe ? D.rs[r - 1] : D.rs[r]);
+  }
+  // Where a note goes: test row t, cell c (-1: none), run ru (null: none).
+  function place(n) {
+    const t = byKey.get(n.test) || null;
+    const v = {n: n, t: t, c: -1, ru: null, unsaved: pend.has(n.id)};
+    const k = n.run === null ? -1 : D.rs.indexOf(n.run);
+    if (k >= 0) v.ru = D.pe ? k + 1 : k;
+    if (t && n.execution !== null) {
+      // The report knows start times only to the second, so several executions can
+      // match: prefer one in the note's run, then the last (a retry's final attempt).
+      const sec = Math.floor(n.execution / 1000) * 1000;
+      let any = -1;
+      for (let i = 0; i < t.s.length; i++) {
+        if (t.s[i] === '.' || startMs(t, i) !== sec) continue;
+        any = i;
+        if (v.ru === null || runOf(t, i) === v.ru) v.c = i;
+      }
+      if (v.c < 0) v.c = any;
+      // Per run, a cell is the test's result in that run, whichever attempt it was.
+      if (v.c < 0 && k >= 0 && !D.pe && t.s[k] !== '.') v.c = k;
+    }
+    if (v.c >= 0) v.ru = runOf(t, v.c);
+    return v;
+  }
+  function indexNotes() {
+    const all = new Map(base);
+    pend.forEach((n, id) => all.set(id, n));
+    noteCell = new Map(); noteTest = new Map(); noteRun = new Map();
+    D.tests.forEach(t => { t.nn = 0; });
+    const push = (m, k, v) => { const l = m.get(k); if (l) l.push(v); else m.set(k, [v]); };
+    const list = [...all.values()].filter(n => !n.deleted)
+      .sort((a, b) => cmp(b.created || '', a.created || '') || cmp(a.id, b.id));  // newest first
+    for (const n of list) {
+      const v = place(n);
+      if (v.t) {
+        v.t.nn++;
+        push(noteTest, v.t.i, v);
+        if (v.c >= 0) push(noteCell, v.t.i + ':' + v.c, v);
+      }
+      if (v.ru !== null) push(noteRun, v.ru, v);
+    }
+    updateBar();
+  }
+
+  function nowIso(after) {
+    // Strictly after the version being replaced, even if that author's clock was ahead.
+    return new Date(Math.max(Date.now(), after ? stamp(after) + 1 : 0)).toISOString();
+  }
+  function newId() {
+    const b = new Uint8Array(16);
+    try { crypto.getRandomValues(b); } catch (e) { for (let k = 0; k < 16; k++) b[k] = Math.random() * 256; }
+    b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;  // uuid4
+    return Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+  }
+  function change(n) {
+    if (!n) return;
+    pend.set(n.id, n);
+    persist();
+    indexNotes();
+    render(true);
+    refreshPanel();
+  }
+  function refreshPanel() {
+    if (!shownIn || panel.hidden) return;
+    if (shownIn.c === null) showTest(shownIn.t); else showCell(shownIn.t, shownIn.c);
+  }
+
+  function cellNotes(t, i) {
+    const here = noteCell.get(t.i + ':' + i) || [];
+    const ru = runOf(t, i);
+    const same = ru === null ? [] : (noteRun.get(ru) || []).filter(v => !(v.t === t && v.c === i));
+    const general = (noteTest.get(t.i) || []).filter(v => v.n.execution === null);
+    const n = here.length + same.length + general.length;
+    body.appendChild(el('div', 'sec', n ? 'Notes (' + n + ')' : 'Notes'));
+    here.forEach(v => body.appendChild(noteItem(v, t, i, false)));
+    same.forEach(v => body.appendChild(noteItem(v, t, i, true)));
+    general.forEach(v => body.appendChild(noteItem(v, t, i, false)));
+    body.appendChild(addBox(t, i));
+  }
+
+  // One note in the panel, which shows test t (and cell c, or null for the test summary).
+  function noteItem(v, t, c, sameRun) {
+    const n = v.n, box = el('div', 'note' + (v.unsaved ? ' unsaved' : ''));
+    const meta = el('div', 'nmeta');
+    if (sameRun) meta.appendChild(el('span', 'tag', 'same run'));
+    let where = null;
+    if (v.t !== t) where = v.t.sn + (v.c >= 0 ? ' \\u00b7 ' + (whenText(v.t, v.c) || 'execution') : '');
+    else if (v.c >= 0) { if (v.c !== c) where = whenText(t, v.c) || 'execution ' + (v.c + 1); }
+    else where = n.execution === null ? 'whole test' : 'execution not in this report';
+    if (where !== null && (v.t !== t || v.c >= 0)) {
+      const b = el('button', 'link', where);
+      b.type = 'button';
+      b.title = v.c >= 0 ? 'Show this execution' : 'Show this test';
+      b.addEventListener('click', () => { if (v.c >= 0) showCell(v.t, v.c); else showTest(v.t); });
+      meta.appendChild(b);
+    } else if (where !== null) meta.appendChild(el('span', '', where));
+    if (n.author) meta.appendChild(el('b', '', n.author));
+    const created = stamp(n.created);
+    if (created !== -Infinity) meta.appendChild(el('span', '', utc(created, false)));
+    if (n.updated && n.created && n.updated !== n.created) meta.appendChild(el('span', '', '(edited)'));
+    if (v.unsaved) {
+      const u = el('span', 'tag unsaved', 'unsaved');
+      u.title = 'Kept in this browser until you save notes';
+      meta.appendChild(u);
+    }
+    const act = el('span', 'nact');
+    const edit = el('button', 'link', 'Edit'), del = el('button', 'link', 'Delete');
+    edit.type = del.type = 'button';
+    const text = el('div', 'ntext', n.text);
+    edit.addEventListener('click', () => {
+      const editor = el('div'), ta = el('textarea'), row = el('div', 'nrow');
+      ta.value = n.text;
+      ta.setAttribute('aria-label', 'Note text');
+      const ok = el('button', 'tbtn', 'Save'), no = el('button', 'tbtn', 'Cancel');
+      ok.type = no.type = 'button';
+      const done = () => {
+        const value = noteText(ta.value);
+        if (!value) { ta.focus(); return; }
+        if (value === n.text) { refreshPanel(); return; }
+        change(Object.assign({}, n, {text: value, updated: nowIso(n.updated)}));
+      };
+      ok.addEventListener('click', done);
+      no.addEventListener('click', refreshPanel);
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); done(); }
+      });
+      row.appendChild(ok); row.appendChild(no);
+      editor.appendChild(ta); editor.appendChild(row);
+      text.replaceWith(editor);
+      act.hidden = true;
+      ta.focus();
+    });
+    del.addEventListener('click', () => {
+      if (!window.confirm('Delete this note?')) return;
+      change(parseNote({id: n.id, deleted: true, updated: nowIso(n.updated), test: n.test,
+                        name: n.name, execution: n.execution, run: n.run, created: n.created}));
+    });
+    act.appendChild(edit); act.appendChild(del);
+    meta.appendChild(act);
+    box.appendChild(meta);
+    box.appendChild(text);
+    return box;
+  }
+
+  // The form for a new note on test t: on cell i, or (i null) on the test.
+  function addBox(t, i) {
+    const box = el('div', 'nadd'), ta = el('textarea'), row = el('div', 'nrow');
+    ta.placeholder = i === null ? 'Add a note on this test\\u2026'
+      : 'Add a note\\u2026 e.g. why it failed, a ticket, the fix';
+    ta.setAttribute('aria-label', 'New note');
+    const who = el('input'), me = load(AUTHOR);
+    who.type = 'text'; who.placeholder = 'Your name (optional)';
+    who.setAttribute('aria-label', 'Your name');
+    who.value = typeof me === 'string' ? me : '';
+    let scope = null;
+    if (i !== null) {
+      scope = el('select');
+      scope.setAttribute('aria-label', 'What the note is about');
+      [['exec', 'on this execution'], ['test', 'on the whole test']].forEach(o => {
+        const opt = el('option', '', o[1]);
+        opt.value = o[0];
+        scope.appendChild(opt);
+      });
+    }
+    const add = el('button', 'tbtn', 'Add note');
+    add.type = 'button';
+    const submit = () => {
+      const text = noteText(ta.value);
+      if (!text) { ta.focus(); return; }
+      const author = str1(who.value, 200);
+      keep(AUTHOR, author);
+      const on = scope && scope.value === 'exec' ? i : null, now = nowIso();
+      change(parseNote({id: newId(), test: t.h, name: t.n,
+                        execution: on === null ? null : startMs(t, on),
+                        run: on === null ? null : runStart(t, on),
+                        text: text, author: author, created: now, updated: now}));
+    };
+    add.addEventListener('click', submit);
+    ta.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); }
+    });
+    box.appendChild(ta);
+    row.appendChild(who);
+    if (scope) row.appendChild(scope);
+    row.appendChild(add);
+    box.appendChild(row);
+    return box;
+  }
+
+  // ---- saving into the notes file
+  let handle = null;  // the notes file (FileSystemFileHandle), once picked; kept in IndexedDB
+  function idb(mode, op) {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('allure-history', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('files');
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result, tx = db.transaction('files', mode), r = op(tx.objectStore('files'));
+        tx.oncomplete = () => { db.close(); resolve(r.result); };
+        tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+      };
+    });
+  }
+  function updateBar() {
+    const n = pend.size;
+    saveB.textContent = (FSA ? 'Save notes' : 'Export notes') + (n ? ' (' + n + ' unsaved)' : '');
+    saveB.disabled = !n && !FSA;
+    modeEl.replaceChildren();
+    if (!FSA) {
+      modeEl.textContent = 'Downloads a file; the next allure-history run merges it into ' + D.nf;
+      return;
+    }
+    modeEl.textContent = handle ? 'Saves straight into ' + handle.name
+      : 'Saves straight into your ' + D.nf + ' (pick it the first time)';
+    if (handle) {
+      const b = el('button', 'link', 'use another file');
+      b.type = 'button';
+      b.addEventListener('click', () => {
+        handle = null;
+        idb('readwrite', s => s.delete(STORE)).catch(() => {});
+        updateBar();
+      });
+      modeEl.appendChild(document.createTextNode(' \\u00b7 '));
+      modeEl.appendChild(b);
+    }
+  }
+  function countsText(c) {
+    const bits = ['added', 'updated', 'deleted'].filter(k => c[k]).map(k => c[k] + ' ' + k);
+    return bits.length ? bits.join(', ') : 'no changes';
+  }
+
+  async function saveDirect() {
+    const kept = ' Your notes are still kept in this browser.';
+    let h = handle;
+    if (!h) {
+      try {
+        h = await window.showSaveFilePicker({suggestedName: D.nf,
+          types: [{description: 'Notes file', accept: {'application/json': ['.json']}}]});
+      } catch (e) { say('Not saved: no file chosen.' + kept); return; }
+    }
+    try {
+      let perm = h.queryPermission ? await h.queryPermission({mode: 'readwrite'}) : 'granted';
+      if (perm !== 'granted' && h.requestPermission) perm = await h.requestPermission({mode: 'readwrite'});
+      if (perm !== 'granted') { say('Not saved: no permission to write ' + h.name + '.' + kept); return; }
+      // Merge with what the file holds now: teammates may have added notes since.
+      const current = await (await h.getFile()).text();
+      const raw = current.trim() ? JSON.parse(current) : [];
+      if (!Array.isArray(raw)) throw new Error(h.name + ' is not a list of notes, so it was left alone');
+      const sent = new Map(pend), all = new Map(base);
+      sent.forEach((n, id) => all.set(id, n));
+      const r = mergeFile(raw, [...all.values()]);
+      const w = await h.createWritable();
+      await w.write(JSON.stringify(r.entries, null, 2) + '\\n');
+      await w.close();
+      handle = h;
+      idb('readwrite', s => s.put(h, STORE)).catch(() => {});
+      // Show what the file has now, teammates' notes too, until the report is rebuilt.
+      for (const n of r.notes) {
+        const e = embedded.get(n.id);
+        if (!e || canonical(e) !== canonical(n)) saved.set(n.id, n);
+      }
+      sent.forEach((n, id) => { if (pend.get(id) === n) pend.delete(id); });
+      settle();
+      persist();
+      indexNotes();
+      render(true);
+      refreshPanel();
+      say('Saved to ' + h.name + ' (' + countsText(r.counts) + ').');
+    } catch (e) {
+      say('Not saved: ' + ((e && e.message) || e) + '.' + kept);
+    }
+  }
+  function download() {
+    const all = new Map(base);
+    pend.forEach((n, id) => all.set(id, n));
+    const entries = mergeFile([], [...all.values()]).entries;
+    // A new name each time, so browsers don't rename it to "... (1).json"
+    const name = 'allure-notes-export-' + new Date().toISOString().slice(0, 19).replace(/[-:]/g, '') + '.json';
+    const a = el('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(entries, null, 2) + '\\n'],
+                                          {type: 'application/json'}));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    say('Downloaded ' + name + '. Put it next to ' + D.nf + '; the next allure-history run merges it in.');
+  }
+  let saving = false;
+  saveB.addEventListener('click', async () => {
+    if (saving) return;
+    saving = true;
+    saveB.disabled = true;
+    try {
+      if (FSA) await saveDirect(); else download();
+    } catch (e) {
+      say('Not saved: ' + ((e && e.message) || e) + '.');
+    } finally {
+      saving = false;
+      updateBar();
+    }
+  });
+
+  settle();
+  if (Object.keys(local).length) persist();
+  indexNotes();
+  if (FSA) {
+    idb('readonly', s => s.get(STORE)).then(h => {
+      if (h && typeof h.getFile === 'function') { handle = h; updateBar(); }
+    }, () => {});
+  }
 
   apply(false);
 })();
@@ -890,7 +1388,7 @@ def _page_data(h: History) -> dict:
                              and c.stop >= c.when else None)
             run_nos.append(run_of.get((t.key, c.when, c.status)) if c.status else None)
         entry = {
-            "i": rank, "n": t.name, "k": int(t.is_flaky), "f": t.flips,
+            "i": rank, "h": t.key, "n": t.name, "k": int(t.is_flaky), "f": t.flips,
             "r": round(t.flip_rate, 4), "x": t.counts["failed"] + t.counts["broken"],
             "p": t.runs_present, "s": "".join(_CODE.get(c.status, "?") for c in t.cells),
             "g": test_group(t), "fi": msg(t.file) if t.file else -1, "cl": t.cls,
@@ -910,9 +1408,14 @@ def _page_data(h: History) -> dict:
         if any(run_nos):
             entry["u"] = run_nos    # detected run number (per-execution mode)
         tests.append(entry)
+    # Run starts, so a note's "run" can be matched to a run: detected run N is rs[N-1]
+    # in per-execution mode, else column i is rs[i].
+    run_starts = [r.start for r in (h.detected_runs if h.per_execution else h.runs)]
     return {"runs": [r.label for r in h.runs], "urls": [r.url for r in h.runs],
             "tests": tests, "msgs": msgs, "pe": int(h.per_execution), "t0": t0,
-            "nruns": len(h.detected_runs)}
+            "nruns": len(h.detected_runs), "rs": run_starts,
+            # Tombstones too: saving merges them into the notes file.
+            "notes": [n.to_dict() for n in h.notes]}
 
 
 def _reasons_text(t: TestHistory, limit: int = 5) -> str:
@@ -962,8 +1465,23 @@ def _filter_boxes(h: History) -> str:
         for id_, group, label, tip in _GROUP_BOXES)
 
 
-def render_html(h: History, title: str = "Test History") -> str:
+# Its text is filled in by the page script, which knows whether the browser can save
+# into the notes file directly.
+_NOTES_BAR = """<div class="notesbar">
+  <button type="button" id="saveNotes" class="tbtn">Save notes</button>
+  <span id="nmode" class="muted"></span>
+  <span id="nmsg" role="status"></span>
+</div>"""
+
+
+def render_html(h: History, title: str = "Test History", notes_name: str = NOTES_FILE,
+                notes_key: str = "") -> str:
+    """notes_name is the notes file's name (offered when saving notes); notes_key tells
+    this project's notes apart from other reports' in the browser's storage."""
     flaky = h.flaky
+    data = _page_data(h) if h.tests else None
+    if data is not None:
+        data["nf"], data["nk"] = notes_name, f"{title}|{notes_key or notes_name}"
     head_cells = []
     for r in h.runs:
         tip = r.label if h.per_execution else "\n".join(
@@ -977,7 +1495,8 @@ def render_html(h: History, title: str = "Test History") -> str:
         f'<span><i style="background:var(--{s})"></i>{s}</span>'
         for s in ("passed", "failed", "broken", "skipped")
     ) + ("" if h.per_execution else
-         '<span>&#8226; dot = retried within run</span><span>. = not run</span>')
+         '<span>&#8226; dot = retried within run</span><span>. = not run</span>'
+         ) + '<span>&#9700; corner = has notes</span>'
 
     if h.tests:
         table = f"""
@@ -990,7 +1509,7 @@ def render_html(h: History, title: str = "Test History") -> str:
   {''.join(head_cells)}
 </tr></thead>
 <tbody></tbody></table></div>
-<script id="history-data" type="application/json">{_script_json(_page_data(h))}</script>
+<script id="history-data" type="application/json">{_script_json(data)}</script>
 <script>{_JS}</script>"""
     else:
         table = '<div class="empty">No test results found.</div>'
@@ -1036,6 +1555,7 @@ def render_html(h: History, title: str = "Test History") -> str:
   <span class="legend">{legend}</span>
   <span style="color:var(--muted)"><span id="shown">{len(h.tests)}</span> shown <span id="hint"></span></span>
 </div>
+{_NOTES_BAR if h.tests else ''}
 <!-- must come before the matrix: the page script inside it looks this panel up -->
 <aside id="detail" role="dialog" aria-label="Execution details" hidden>
   <div class="dhead">

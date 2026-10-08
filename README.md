@@ -75,6 +75,8 @@ With a single folder, the tool works **per test execution**. Every result file i
 | `--runs N` | Per-execution mode: how many of the most recent runs to list in the terminal (default 15, 0 = all) |
 | `--per-execution` / `--per-run` | Order each test's executions by time, or treat each folder/snapshot as one run. Default: per-execution for a single folder, per-run for several |
 | `--title TEXT` | Title of the HTML report |
+| `--notes FILE` | Notes file to show in the report (default: `allure-notes.json` in the current directory, if it exists). See [Notes](#notes) |
+| `--no-merge-exports` | Don't merge downloaded `allure-notes-export*.json` files into the notes file |
 | `--fail-on-flaky` | Exit with code 2 if any flaky test is found (for CI gates). A test that starts failing and keeps failing (`PPPFFF`) has one flip, so it counts too |
 
 Paths can be `allure-results` folders, snapshot files, or folders containing either. See [Keeping history small](#keeping-history-small).
@@ -85,6 +87,62 @@ To try it on generated sample data:
 python examples/make_sample.py sample-results
 python -m allure_history sample-results --html history.html
 ```
+
+## Notes
+
+You can keep notes on failures ("DB timeout on the CI runner, see TICKET-123") and see them again in every later report. A note is on one execution (and so on its run) or on a test in general.
+
+Notes live in `allure-notes.json`, a small JSON file next to where you run `allure-history`. **Commit it** (or keep it next to the history), so the whole team sees the same notes. Every report built in that directory shows them; `--notes FILE` picks another file.
+
+**In the report:**
+
+- Click a cell and type in the **Add note** box, for that execution or for the whole test. Your name is remembered in this browser.
+- A cell with notes has a dark folded corner (the retry dot is in the other corner), and a test with notes shows `✎ N` next to its name.
+- The panel for a cell shows that execution's notes, notes on other tests in the same run (marked **same run**), and the test's general notes. The test summary lists all its notes, newest first, each linking to its execution.
+- Notes can be edited and deleted. New changes are marked **unsaved**. They are kept in this browser (local storage) until you save them, so they survive a reload but other people can't see them yet.
+
+**Saving.** Click **Save notes**. What happens depends on the browser; the line next to the button says which:
+
+- **Chrome and Edge** save straight into `allure-notes.json`. The first time, you pick the file (or create it); after that, saving is one click, even after a reload. Saving reads the file first and merges, so notes a teammate added since the report was built are kept.
+- **Firefox and Safari** can't write files, so the button is **Export notes** and downloads `allure-notes-export-<time>.json`. Put it next to `allure-notes.json` (or in the folder you run `allure-history` from). The next `allure-history` run merges it in and prints e.g. `merged 1 note export into allure-notes.json (2 added, 0 updated, 0 deleted)`. You can delete the export afterwards. Merging the same export twice changes nothing, so leaving it there does no harm. With no `allure-notes.json` yet, the run creates it from the exports. `--no-merge-exports` turns this off.
+
+Once the regenerated report has your changes, they're no longer marked unsaved.
+
+**Merging.** Every note has a permanent `id` and an `updated` time. When two copies of a note meet, the one updated last wins. A deleted note stays in the file as a tombstone (`{"id": ..., "deleted": true, "updated": ...}`), so an older copy can't bring it back. Saving, exports, and `note merge` all follow these rules, so copies from several people can be merged in any order and come out the same.
+
+**The file** is a JSON list, one note per entry, sorted by creation time so git diffs stay small:
+
+```json
+[
+  {
+    "id": "3f2a9c0e6b1d4e8f9a7b5c3d1e0f2a4b",
+    "test": "a1b2c3d4e5f6...",
+    "name": "tests.test_api#test_create_order",
+    "execution": 1759000123456,
+    "run": 1759000100000,
+    "text": "DB timeout on the CI runner, see TICKET-123",
+    "author": "alice",
+    "created": "2026-01-31T12:00:00.000Z",
+    "updated": "2026-01-31T12:00:00.000Z"
+  }
+]
+```
+
+- `test` is the test's key (Allure's `historyId`, as in the JSON output). `name` is for people.
+- `execution` is that execution's start time in epoch milliseconds (`start` in the JSON output). `run` is its run's start time. Both are `null` for a note on the whole test. The report stores times to the second, so a note can only point at one of two executions of the same test in the same second and run if it was added with the CLI and the exact time.
+- Entries that aren't valid (missing `test` or `text`, wrong types) are skipped with a warning and kept in the file as they are. A hand-written note without an `id` gets one.
+
+**From the command line** (e.g. in CI scripts):
+
+```bash
+# --test takes the test key, its full name, or a unique part of the name
+allure-history note add allure-results --test test_create_order --text "Known issue, see TICKET-123" --author ci
+allure-history note add allure-results --test test_create_order --execution 1759000123456 --text "..."
+allure-history note list --test test_create_order
+allure-history note merge someone-elses-notes.json   # merges into allure-notes.json
+```
+
+Without results paths, `note add` uses `--test` as the exact test key. If part of a name matches several tests, the command lists them and fails. `--text -` reads the note from stdin. All three commands take `--notes FILE`. The terminal table shows how many notes each listed test has, and `--json` output includes the notes.
 
 ## Keeping history small
 
