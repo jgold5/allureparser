@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .loader import Run, TestRun, first_line
+from pathlib import Path
+
+from .loader import Attempt, Run, TestRun, first_line
 
 # Outcome classes used for flip detection. failed and broken both count as "not passing":
 # a test going failed -> broken is still consistently red, not flaky. skipped/unknown are
@@ -23,6 +25,7 @@ class Cell:
     attempts: list[str] = field(default_factory=list)
     message: str = ""
     location: str = ""
+    when: Optional[int] = None  # start time; set in per-execution mode
 
     @property
     def retried(self) -> bool:
@@ -73,8 +76,10 @@ class TestHistory:
 
 @dataclass
 class History:
-    runs: list[Run]
+    runs: list[Run]  # in per-execution mode: one column per execution position
     tests: list[TestHistory]
+    per_execution: bool = False
+    executions: int = 0  # total test executions (per-execution mode)
 
     @property
     def flaky(self) -> list[TestHistory]:
@@ -139,3 +144,46 @@ def build_history(runs: list[Run], min_runs: int = 1) -> History:
 
     tests.sort(key=rank_key)
     return History(runs=runs, tests=tests)
+
+
+def build_execution_history(runs: list[Run], last: int = 0, min_executions: int = 1) -> History:
+    """History by test execution instead of by run: every result file is one execution,
+    and each test's executions are ordered by start time, wherever they came from. Use
+    this for a folder holding results of many runs mixed together. Retries are just more
+    executions, so fail-then-pass on retry counts as a flip."""
+    names: dict[str, str] = {}
+    execs: dict[str, dict] = {}
+    for run in runs:
+        for key, tr in run.tests.items():
+            names[key] = tr.name
+            seen = execs.setdefault(key, {})
+            for a in tr.attempts:
+                # The same execution can arrive twice (e.g. a snapshot and its raw folder)
+                seen.setdefault((a.status, a.start, a.stop, a.message, a.location), a)
+
+    timelines: dict[str, list[Attempt]] = {}
+    for key, seen in execs.items():
+        attempts = sorted(seen.values(), key=lambda a: (a.start is not None, a.start or 0,
+                                                       a.stop is not None, a.stop or 0))
+        if last > 0:
+            attempts = attempts[-last:]
+        if len(attempts) >= min_executions:
+            timelines[key] = attempts
+
+    width = max((len(a) for a in timelines.values()), default=0)
+    # Columns are positions counted back from each test's latest execution, so the
+    # newest result of every test lines up in the rightmost column.
+    columns = [Run(id=f"exec-{width - 1 - i}", path=Path("."),
+                   label="latest" if i == width - 1 else f"\u2212{width - 1 - i}")
+               for i in range(width)]
+    tests = []
+    for key, attempts in timelines.items():
+        cells = [Cell(status=None) for _ in range(width - len(attempts))]
+        cells += [Cell(status=a.status, attempts=[a.status], message=a.message,
+                       location=a.location, when=a.start) for a in attempts]
+        th = TestHistory(key=key, name=names[key], cells=cells)
+        _score(th)
+        tests.append(th)
+    tests.sort(key=rank_key)
+    return History(runs=columns, tests=tests, per_execution=True,
+                   executions=sum(len(a) for a in timelines.values()))

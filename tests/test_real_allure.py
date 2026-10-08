@@ -146,6 +146,23 @@ class RealAllurePytestTests(unittest.TestCase):
                           for i in (5, 3, 1)])
         self.assertTrue(all(r.location.startswith("test_suite.py:") for r in alt.failure_reasons))
 
+    def test_all_runs_in_one_folder_per_execution(self):
+        """Results of all 6 runs collected into one folder: each test's executions, in
+        time order, must match the truth table (a rerun is a fail then a pass)."""
+        import shutil
+        from allure_history.analysis import build_execution_history
+        mixed = Path(self.tmp.name) / "mixed"
+        mixed.mkdir()
+        for f in (Path(self.tmp.name) / "runs").glob("run-*/*-result.json"):
+            shutil.copy(f, mixed / f.name)
+        h = build_execution_history(load_runs([mixed]))
+        code = {"passed": "P", "failed": "F", "broken": "B", "skipped": "S"}
+        got = {self.truth_key(t.name): "".join(code[c.status] for c in t.cells if c.status)
+               for t in h.tests}
+        expected = {k: "".join({"R": "FP", "-": ""}.get(ch, ch) for ch in v)
+                    for k, v in TRUTH.items()}
+        self.assertEqual(got, expected)
+
     def test_ranking(self):
         ranked = [self.truth_key(t.name) for t in self.history.flaky]
         self.assertEqual(ranked[0], "test_alternating")  # 5 flips

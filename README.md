@@ -40,15 +40,30 @@ The HTML report is a single self-contained file. It shows the full matrix with c
 - hover a cell to see where it failed (`tests/test_api.py:42`), the full failure message (including pytest's assertion diff), and the order of retries
 - hover a test name to see its distinct failure reasons with counts. One repeated reason usually means one root cause; several different ones point at something environmental
 
+### One folder with results from many runs
+
+If all your results are collected into one `allure-results` folder, point the tool at it:
+
+```bash
+allure-history allure-results --html history.html
+```
+
+With a single folder, the tool works **per test execution**. Every result file is one execution of one test. Each test's executions are put in time order, wherever they came from, and flips are counted along that sequence, so run boundaries don't matter. A retry is just another execution, so failing and then passing on rerun counts as a flip. In the HTML, each row is one test's timeline, with its latest execution in the rightmost column. Hovering a cell shows when that execution ran.
+
+- `--last N` keeps each test's N most recent executions. `--min-runs N` hides tests with fewer than N executions.
+- `--per-run` treats the folder as a single run instead. `--per-execution` pools several folders or snapshots into per-test timelines.
+- Snapshots keep every execution, so `allure-history snapshot allure-results -o history/` also works for a folder like this.
+
 ### Options
 
 | Flag | Meaning |
 | --- | --- |
 | `--html / --csv / --json FILE` | Write the matrix in that format |
-| `--last N` | Use only the N most recent runs |
+| `--last N` | Use only the N most recent runs (per-execution: each test's N most recent executions) |
 | `--min-runs N` | Ignore tests that appear in fewer than N runs |
 | `--top N` | Number of flaky tests to print (0 = all) |
 | `--all` | Print every test in the terminal table, not just flaky ones |
+| `--per-execution` / `--per-run` | Order each test's executions by time, or treat each folder/snapshot as one run. Default: per-execution for a single folder, per-run for several |
 | `--title TEXT` | Title of the HTML report |
 | `--fail-on-flaky` | Exit with code 2 if any flaky test is found (for CI gates). A test that starts failing and keeps failing (`PPPFFF`) has one flip, so it counts too |
 

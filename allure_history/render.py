@@ -22,13 +22,17 @@ def _run_time(ms) -> str:
         return ""
 
 
-def strip(t: TestHistory) -> str:
-    """Compact one-char-per-run history, e.g. 'PPFP.B'. Lowercase marks a retried run."""
+def strip(t: TestHistory, limit: int = 0) -> str:
+    """Compact one-char-per-run history, e.g. 'PPFP.B'. Lowercase marks a retried run.
+    With a limit, only the most recent entries are shown, after a leading '…'."""
     out = []
     for c in t.cells:
         g = GLYPH.get(c.status, "?")
         out.append(g.lower() if c.retried and c.status else g)
-    return "".join(out)
+    text = "".join(out)
+    if limit and len(text) > limit:
+        text = "\u2026" + text[-(limit - 1):]
+    return text
 
 
 # ---------------------------------------------------------------- text
@@ -36,24 +40,40 @@ def strip(t: TestHistory) -> str:
 
 def render_text(h: History, top: int = 20, flaky_only: bool = True) -> str:
     rows = h.flaky if flaky_only else h.tests
-    lines = [
-        f"{len(h.runs)} runs, {len(h.tests)} tests, {len(h.flaky)} flaky",
-        "Legend: P passed  F failed  B broken  S skipped  . not run  "
-        "(lowercase = retried in that run)",
-        "",
-    ]
+    if h.per_execution:
+        lines = [
+            f"{h.executions} test executions, {len(h.tests)} tests, {len(h.flaky)} flaky "
+            f"(each test's executions in time order, latest on the right)",
+            "Legend: P passed  F failed  B broken  S skipped",
+            "",
+        ]
+    else:
+        lines = [
+            f"{len(h.runs)} runs, {len(h.tests)} tests, {len(h.flaky)} flaky",
+            "Legend: P passed  F failed  B broken  S skipped  . not run  "
+            "(lowercase = retried in that run)",
+            "",
+        ]
     if not rows:
         lines.append("No flaky tests found." if flaky_only else "No tests found.")
         return "\n".join(lines)
 
     shown = rows[:top] if top else rows
-    width = max(len(strip(t)) for t in shown)
-    lines.append(f"{'flips':>5}  {'rate':>5}  {'retry':>5}  {'history':<{width}}  test")
-    for t in shown:
-        lines.append(
-            f"{t.flips:>5}  {t.flip_rate:>5.0%}  {t.in_run_flaky:>5}  "
-            f"{strip(t):<{width}}  {t.name}"
-        )
+    if h.per_execution:
+        hist = {id(t): strip(t, limit=60).lstrip(".") for t in shown}
+        width = max(max(len(s) for s in hist.values()), len("history"))
+        lines.append(f"{'flips':>5}  {'rate':>5}  {'execs':>5}  {'history':>{width}}  test")
+        for t in shown:
+            lines.append(f"{t.flips:>5}  {t.flip_rate:>5.0%}  {t.runs_present:>5}  "
+                         f"{hist[id(t)]:>{width}}  {t.name}")
+    else:
+        width = max(len(strip(t)) for t in shown)
+        lines.append(f"{'flips':>5}  {'rate':>5}  {'retry':>5}  {'history':<{width}}  test")
+        for t in shown:
+            lines.append(
+                f"{t.flips:>5}  {t.flip_rate:>5.0%}  {t.in_run_flaky:>5}  "
+                f"{strip(t):<{width}}  {t.name}"
+            )
     if top and len(rows) > top:
         lines.append(f"... and {len(rows) - top} more (use --top 0 to show all)")
     return "\n".join(lines)
@@ -90,6 +110,7 @@ def render_csv(h: History) -> str:
 
 def to_dict(h: History) -> dict:
     return {
+        "mode": "per-execution" if h.per_execution else "per-run",
         "runs": [
             {"id": r.id, "label": r.label, "order": r.order, "url": r.url,
              "start": r.start, "path": str(r.path), "tests": len(r.tests)}
@@ -113,7 +134,7 @@ def to_dict(h: History) -> dict:
                 ],
                 "cells": [
                     {"status": c.status, "attempts": c.attempts, "message": c.message,
-                     "location": c.location}
+                     "location": c.location, "start": c.when}
                     for c in t.cells
                 ],
             }
@@ -253,7 +274,9 @@ _JS = """
       if (att) { cls += ' retry'; tip.push('attempts: ' + att); }
       const m = t.m && t.m[i];
       if (m !== undefined) tip.push(D.msgs[m]);
-      tr.appendChild(td(cls, ch, tip.join('\\n')));
+      // Per-execution mode: '.' just pads shorter timelines, so leave it blank.
+      if (ch === '.' && D.pe) tr.appendChild(td(cls, '', ''));
+      else tr.appendChild(td(cls, ch, tip.join('\\n')));
     }
     tr.dataset.name = t.l;
     tr.dataset.flaky = t.k ? '1' : '0';
@@ -361,7 +384,8 @@ def _page_data(h: History) -> dict:
         for i, c in enumerate(t.cells):
             if c.retried:
                 attempts[i] = " → ".join(c.attempts)
-            detail = "\n".join(x for x in (f"at {c.location}" if c.location else "",
+            detail = "\n".join(x for x in (_run_time(c.when) if c.when else "",
+                                           f"at {c.location}" if c.location else "",
                                            c.message) if x)
             if detail:
                 messages[i] = msg(detail)
@@ -376,7 +400,8 @@ def _page_data(h: History) -> dict:
         if messages:
             entry["m"] = messages
         tests.append(entry)
-    return {"runs": [r.label for r in h.runs], "tests": tests, "msgs": msgs}
+    return {"runs": [r.label for r in h.runs], "tests": tests, "msgs": msgs,
+            "pe": int(h.per_execution)}
 
 
 def _reasons_text(t: TestHistory, limit: int = 5) -> str:
@@ -398,7 +423,8 @@ def render_html(h: History, title: str = "Test History") -> str:
     flaky = h.flaky
     head_cells = []
     for r in h.runs:
-        tip = "\n".join(x for x in (r.label, _run_time(r.start), f"{len(r.tests)} tests") if x)
+        tip = r.label if h.per_execution else "\n".join(
+            x for x in (r.label, _run_time(r.start), f"{len(r.tests)} tests") if x)
         label = _e(r.label)
         if r.url:
             label = f'<a href="{_e(r.url)}" target="_blank" rel="noopener">{label}</a>'
@@ -407,7 +433,8 @@ def render_html(h: History, title: str = "Test History") -> str:
     legend = "".join(
         f'<span><i style="background:var(--{s})"></i>{s}</span>'
         for s in ("passed", "failed", "broken", "skipped")
-    ) + '<span>&#8226; dot = retried within run</span><span>. = not run</span>'
+    ) + ("" if h.per_execution else
+         '<span>&#8226; dot = retried within run</span><span>. = not run</span>')
 
     if h.tests:
         table = f"""
@@ -416,7 +443,7 @@ def render_html(h: History, title: str = "Test History") -> str:
   <th class="name" data-sort="name">Test</th>
   <th class="num" data-sort="flips" title="Pass/fail transitions between consecutive runs">Flips</th>
   <th class="num" data-sort="rate" title="Flips / (runs with a pass or fail result - 1)">Rate</th>
-  <th class="num" data-sort="fails" title="Failed or broken runs / runs present">Fails</th>
+  <th class="num" data-sort="fails" title="Failed or broken results / total results">Fails</th>
   {''.join(head_cells)}
 </tr></thead>
 <tbody></tbody></table></div>
@@ -426,7 +453,15 @@ def render_html(h: History, title: str = "Test History") -> str:
         table = '<div class="empty">No test results found.</div>'
 
     span = ""
-    starts = [r.start for r in h.runs if r.start]
+    if h.per_execution:
+        starts = [c.when for t in h.tests for c in t.cells if c.when]
+        heading = ("Each row is one test&rsquo;s executions, oldest &rarr; newest; "
+                   "the latest is in the rightmost column")
+        first_stat = f'<div class="stat"><b>{h.executions}</b><span>executions</span></div>'
+    else:
+        starts = [r.start for r in h.runs if r.start]
+        heading = "Runs oldest &rarr; newest, left to right"
+        first_stat = f'<div class="stat"><b>{len(h.runs)}</b><span>runs</span></div>'
     if starts:
         span = f" &middot; {_run_time(min(starts))} &ndash; {_run_time(max(starts))}"
 
@@ -440,9 +475,9 @@ def render_html(h: History, title: str = "Test History") -> str:
 </head>
 <body>
 <h1>{_e(title)}</h1>
-<div class="sub">Runs oldest &rarr; newest, left to right{span}</div>
+<div class="sub">{heading}{span}</div>
 <div class="stats">
-  <div class="stat"><b>{len(h.runs)}</b><span>runs</span></div>
+  {first_stat}
   <div class="stat"><b>{len(h.tests)}</b><span>tests</span></div>
   <div class="stat"><b>{len(flaky)}</b><span>flaky tests</span></div>
   <div class="stat"><b>{sum(t.flips for t in flaky)}</b><span>total flips</span></div>

@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-from .analysis import build_history
+from .analysis import build_execution_history, build_history
 from .loader import _url, load_run, load_runs
 from .render import render_csv, render_html, render_json, render_text
 from .snapshot import SUFFIX, default_name, prune, write_snapshot
@@ -37,10 +37,21 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--html", type=Path, help="write the interactive HTML matrix to this file")
     p.add_argument("--csv", type=Path, help="write the matrix as CSV to this file")
     p.add_argument("--json", type=Path, help="write the full history as JSON to this file")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--per-execution", action="store_true",
+                      help="treat every test result as its own execution and order each "
+                           "test's executions by time, ignoring run boundaries (default "
+                           "when given a single results folder, e.g. one folder that "
+                           "collects results from many runs)")
+    mode.add_argument("--per-run", action="store_true",
+                      help="treat each results folder or snapshot as one run (default when "
+                           "given several)")
     p.add_argument("--last", type=non_negative, default=0, metavar="N",
-                   help="only use the N most recent runs")
+                   help="only use the N most recent runs (per-execution: each test's N "
+                        "most recent executions)")
     p.add_argument("--min-runs", type=non_negative, default=1, metavar="N",
-                   help="ignore tests that appear in fewer than N runs (default 1)")
+                   help="ignore tests with fewer than N runs, or N executions in "
+                        "per-execution mode (default 1)")
     p.add_argument("--top", type=non_negative, default=20, metavar="N",
                    help="how many flaky tests to print (0 = all, default 20)")
     p.add_argument("--all", action="store_true",
@@ -140,10 +151,16 @@ def main(argv=None) -> int:
     if not runs:
         print("error: no Allure results found in the given paths", file=sys.stderr)
         return 1
-    if args.last > 0:
-        runs = runs[-args.last:]
-
-    history = build_history(runs, min_runs=args.min_runs)
+    per_execution = args.per_execution or (len(runs) == 1 and not args.per_run)
+    if per_execution:
+        if not args.per_execution:
+            print("note: one results folder, so each test's executions are ordered by time "
+                  "(use --per-run to treat it as a single run)", file=sys.stderr)
+        history = build_execution_history(runs, last=args.last, min_executions=args.min_runs)
+    else:
+        if args.last > 0:
+            runs = runs[-args.last:]
+        history = build_history(runs, min_runs=args.min_runs)
 
     for path, render in ((args.html, lambda: render_html(history, args.title)),
                          (args.csv, lambda: render_csv(history)),
