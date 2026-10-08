@@ -36,8 +36,10 @@ flips   rate  retry  history          test
 
 The HTML report is a single self-contained file. It shows the full matrix with color-coded cells. It renders only the rows in view, so it stays fast for large suites: 3,000 tests × 100 runs (300,000 results) is a 3–6 MB file that loads in under a second. You can:
 
-- filter the tests by name and turn the **flaky only** filter on or off
-- sort by flips, rate, or failures
+- **search** with a fuzzy finder: type parts of a test, class or file name in order (`paysaved` finds `test_pay_with_saved_card`), with several words narrowing it down. Press `/` to jump to the search box, Enter to open the top result, Esc to clear.
+- tests are **grouped by source file** (e.g. `src/test/common/test_file.py`), with collapsible headers showing each file's counts. Each row shows the test name first and its class in grey. Turn off "Group by file" for a flat list.
+- filter with **Flaky only / Only passed / Only failed / Only skipped**. Every test is in exactly one of these groups (skips are ignored for passed/failed), and each box shows its count. Check several boxes to see several groups, or none to see everything.
+- sort by name, flips, rate, or failures
 - hover a cell to see where it failed (`tests/test_api.py:42`), the full failure message (including pytest's assertion diff), and the order of retries
 - hover a test name to see its distinct failure reasons with counts. One repeated reason usually means one root cause; several different ones point at something environmental
 - **click a cell** to open that one result in a side panel: status, run (with a link to it), exact start time and duration, retries, where it failed, and the full failure message as copyable text. Use the ←/→ buttons or arrow keys to step through that test's other results; Esc closes the panel. Click a test name for its summary and failure reasons.
@@ -59,7 +61,7 @@ With a single folder, the tool works **per test execution**. Every result file i
 **Seeing individual runs.** The folder doesn't record where one run ends and the next begins, so the tool works it out. `allure-pytest` records the machine and the pytest process ID on every result, and each pytest run is its own process. The tool groups results that way, and treats the workers of a parallel (`pytest -n`) run as one run. If a process ID gets reused (common in containers), the tool still splits the runs, because the same test shows up again.
 
 - The terminal lists the 15 most recent runs, with start time, duration, and pass/fail/broken/skipped/retried counts. Use `--runs N` to show a different number, or `--runs 0` for all.
-- The HTML report has a **Runs** section, newest first. Click a run to see which tests failed, where, and why, plus which tests passed only after a retry. Hovering a cell in the matrix shows which run that execution belonged to.
+- In the HTML report, hovering or clicking a cell shows which run that execution belonged to, and the header shows how many runs were found.
 - `--json` output includes `runs_detected` with the same information.
 - Results without that machine and process information are grouped by the folder or snapshot they came from.
 
