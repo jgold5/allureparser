@@ -317,6 +317,12 @@ td.c.retry::after { content: ""; position: absolute; top: 2px; right: 2px; width
   border-radius: 8px;
   background: var(--broken); color: var(--cell-fg); margin-right: 6px; vertical-align: 1px; }
 .empty { padding: 24px; color: var(--muted); }
+#nmsg:empty { display: none; }
+#nmsg { position: fixed; left: 16px; bottom: 16px; z-index: 20; max-width: min(520px, calc(100vw - 32px));
+  background: var(--fg); color: var(--bg); padding: 8px 12px; border-radius: 8px; font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .25); }
+#nmsg .link { color: inherit; text-decoration: underline; background: none; border: 0; padding: 0;
+  font: inherit; cursor: pointer; }
 td.c { cursor: pointer; }
 td.c.none { cursor: default; }
 td.c.sel { outline: 2px solid var(--fg); outline-offset: -2px; }
@@ -911,7 +917,8 @@ _JS = """
   // the browser can write files (File System Access API), else as a downloaded export
   // that the next allure-history run merges in. Note text only goes through textContent.
   const STORE = 'allure-history-notes:' + D.nk, AUTHOR = 'allure-history-author';
-  const FSA = typeof window.showSaveFilePicker === 'function';
+  const FSA = typeof window.showOpenFilePicker === 'function'
+    && typeof window.showSaveFilePicker === 'function';
   const saveB = document.getElementById('saveNotes');
   const modeEl = document.getElementById('nmode'), msgEl = document.getElementById('nmsg');
   const byKey = new Map(D.tests.map(t => [t.h, t]));
@@ -1028,6 +1035,7 @@ _JS = """
     }
   }
   function say(text) { msgEl.textContent = text; }
+  function sayExtra(node) { msgEl.appendChild(document.createTextNode(' ')); msgEl.appendChild(node); }
 
   function runOf(t, i) { return D.pe ? (t.u && t.u[i]) || null : i; }
   function runStart(t, i) {
@@ -1264,14 +1272,29 @@ _JS = """
     return bits.length ? bits.join(', ') : 'no changes';
   }
 
-  async function saveDirect() {
+  const PICK_TYPES = [{description: 'Notes file', accept: {'application/json': ['.json']}}];
+
+  async function saveDirect(create) {
     const kept = ' Your notes are still kept in this browser.';
     let h = handle;
     if (!h) {
       try {
-        h = await window.showSaveFilePicker({suggestedName: D.nf,
-          types: [{description: 'Notes file', accept: {'application/json': ['.json']}}]});
-      } catch (e) { say('Not saved: no file chosen.' + kept); return; }
+        // An existing notes file is chosen with the *open* dialog: the save dialog may
+        // empty a file it is pointed at, which would lose teammates' notes before the
+        // merge reads them. The save dialog is only used to create a new file.
+        h = create
+          ? await window.showSaveFilePicker({suggestedName: D.nf, types: PICK_TYPES})
+          : (await window.showOpenFilePicker({types: PICK_TYPES, multiple: false}))[0];
+      } catch (e) {
+        say('Not saved: no file chosen.' + kept);
+        if (!create && typeof window.showSaveFilePicker === 'function') {
+          const b = el('button', 'link', 'No notes file yet? Create one');
+          b.type = 'button';
+          b.addEventListener('click', () => saveDirect(true));
+          sayExtra(b);
+        }
+        return;
+      }
     }
     try {
       let perm = h.queryPermission ? await h.queryPermission({mode: 'readwrite'}) : 'granted';
