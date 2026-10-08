@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allure-history"
-version = "0.5.0"
+version = "0.6.0"
 description = "Cross-run test history matrix and flaky-test ranking from Allure results"
 readme = "README.md"
 requires-python = ">=3.9"

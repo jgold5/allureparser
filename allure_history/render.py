@@ -237,14 +237,14 @@ def render_json(h: History) -> str:
 _CSS = """
 :root {
   --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de; --head: #f6f8fa;
-  --row-hover: #f3f6fa; --mark: #fff3a3;
+  --row-hover: #f3f6fa; --mark: #fff3a3; --flaky-fg: #1f2328;
   --passed: #2da44e; --failed: #cf222e; --broken: #d4a72c; --skipped: #8c959f;
   --unknown: #8250df; --none: transparent; --cell-fg: #ffffff; --note: #1f2328;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --border: #30363d; --head: #161b22;
-    --row-hover: #1c2129; --mark: #6b5a14;
+    --row-hover: #1c2129; --mark: #6b5a14; --flaky-fg: #ffffff;
     --passed: #238636; --failed: #da3633; --broken: #bb8009; --skipped: #484f58;
     --unknown: #8957e5; --note: #f0f6fc;
   }
@@ -296,6 +296,16 @@ tr.grp .caret { color: var(--muted); width: 10px; display: inline-block; }
 tr.grp .gfile { font-weight: 600; font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 tr.grp .gmeta { color: var(--muted); font-size: 12px; }
+tr.grp .gbar { display: inline-flex; width: 110px; height: 8px; border-radius: 4px;
+  overflow: hidden; background: var(--border); flex: none; }
+tr.grp .gseg { height: 100%; }
+.gseg.passed, .gchip.passed { background: var(--passed); }
+.gseg.failed, .gchip.failed { background: var(--failed); }
+.gseg.flaky, .gchip.flaky { background: var(--broken); }
+.gseg.skipped, .gchip.skipped { background: var(--skipped); }
+tr.grp .gchip { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px;
+  line-height: 16px; font-weight: 600; color: var(--cell-fg); }
+tr.grp .gchip.flaky { color: var(--flaky-fg); }
 .tbtn { border: 1px solid var(--border); background: var(--bg); color: var(--fg);
   border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit; font-size: 13px; }
 #hint { margin-left: 6px; font-size: 12px; }
@@ -459,7 +469,16 @@ _JS = """
   let sel = null;  // {t, c}: the cell shown in the detail panel
   let shownIn = null;  // {t, c}: what the panel shows (c is null for a test summary)
   let noteCell = new Map(), noteTest = new Map(), noteRun = new Map();  // see indexNotes
-  const collapsed = new Set();  // file paths whose group is collapsed
+  // Files start collapsed: the report opens as a one-line-per-file overview.
+  const collapsed = new Set(D.tests.map(t => t.file));  // file paths whose group is collapsed
+  // Per-file totals over all tests (not just those the filters show), for the headers.
+  const fileStats = new Map();
+  D.tests.forEach(t => {
+    let st = fileStats.get(t.file);
+    if (!st) fileStats.set(t.file, st = {flaky: 0, failed: 0, passed: 0, skipped: 0, total: 0});
+    st[t.g]++;
+    st.total++;
+  });
   // While searching, matching files start open; header clicks then fold them only
   // for that search, and the normal collapsed state comes back when it is cleared.
   let searchClosed = new Set(), lastQuery = '';
@@ -674,6 +693,15 @@ _JS = """
         document.activeElement.closest('tr.grp')) again.focus({preventScroll: true});
   }
 
+  const GROUP_ORDER = ['failed', 'flaky', 'passed', 'skipped'];
+  const GROUP_LABEL = {failed: 'failing', flaky: 'flaky', passed: 'passing', skipped: 'skipped'};
+  const GROUP_TIP = {
+    failed: 'Never passed (failed or broken every time it ran)',
+    flaky: 'Both passed and failed',
+    passed: 'Never failed',
+    skipped: 'Skipped (or no result) every time',
+  };
+
   function groupRow(g) {
     const tr = document.createElement('tr');
     tr.className = 'grp' + (g.open ? '' : ' closed');
@@ -689,10 +717,27 @@ _JS = """
     const inner = el('span', 'gin');
     inner.appendChild(el('span', 'caret', g.open ? '\u25be' : '\u25b8'));
     inner.appendChild(el('span', 'gfile', g.file || '(no file recorded)'));
-    const bits = [g.tests.length + (g.tests.length === 1 ? ' test' : ' tests')];
-    if (g.flaky) bits.push(g.flaky + ' flaky');
-    if (g.failing) bits.push(g.failing + ' never passed');
-    inner.appendChild(el('span', 'gmeta', bits.join(' \u00b7 ')));
+    const st = fileStats.get(g.file);
+    inner.appendChild(el('span', 'gmeta', st.total + (st.total === 1 ? ' test' : ' tests')));
+    // Proportion bar, problems first, then labelled counts in the matrix colours.
+    const bar = el('span', 'gbar');
+    bar.title = GROUP_ORDER.filter(k => st[k]).map(k => st[k] + ' ' + GROUP_LABEL[k]).join(', ');
+    for (const k of GROUP_ORDER) {
+      if (!st[k]) continue;
+      const seg = el('span', 'gseg ' + k);
+      seg.style.width = (100 * st[k] / st.total) + '%';
+      bar.appendChild(seg);
+    }
+    inner.appendChild(bar);
+    for (const k of GROUP_ORDER) {
+      if (!st[k]) continue;
+      const c = el('span', 'gchip ' + k, st[k] + ' ' + GROUP_LABEL[k]);
+      c.title = GROUP_TIP[k];
+      inner.appendChild(c);
+    }
+    if (g.tests.length < st.total) {
+      inner.appendChild(el('span', 'gmeta', 'showing ' + g.tests.length + ' of ' + st.total));
+    }
     cell.appendChild(inner);
     tr.appendChild(cell);
     return tr;
@@ -862,7 +907,22 @@ _JS = """
     if (c) c.classList.add('sel');
   }
 
+  function reveal(t) {
+    if (grouped() && !lastQuery && collapsed.has(t.file)) {
+      collapsed.delete(t.file);
+      apply(false);
+    }
+    const k = view.indexOf(t);
+    if (k < 0) return;
+    const top = k * rowH, h = wrap.clientHeight;
+    if (top < wrap.scrollTop || top + rowH > wrap.scrollTop + h) {
+      wrap.scrollTop = Math.max(0, top - h / 3);
+      render(false);
+    }
+  }
+
   function showCell(t, i) {
+    reveal(t);
     sel = {t: t, c: i};
     shownIn = {t: t, c: i};
     const code = t.s[i];
