@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr
 from pathlib import Path
 from unittest import mock
 

@@ -38,6 +38,37 @@ class FileAndClassTests(unittest.TestCase):
             "labels": labels(package="src.test.common.test_file", subSuite="test_class")}),
             ("src/test/common/test_file.py", "test_class"))
 
+    def test_title_path_wins(self):
+        # allure-pytest 2.14+: exact file (dots in folder names kept) and nested classes
+        self.assertEqual(file_and_class({
+            "fullName": "src.test.v1.2.test_ver#test_version",
+            "titlePath": ["src", "test", "v1.2", "test_ver.py"],
+            "labels": labels(package="src.test.v1.2.test_ver")}),
+            ("src/test/v1.2/test_ver.py", ""))
+        self.assertEqual(file_and_class({
+            "fullName": "src.t.test_auth.TestOuter.TestInner#test_nested",
+            "titlePath": ["src", "t", "test_auth.py", "TestOuter", "TestInner"],
+            "labels": labels(subSuite="TestOuter > TestInner")}),
+            ("src/t/test_auth.py", "TestOuter.TestInner"))
+        # junk titlePath falls through to labels
+        for junk in (None, "x", [], [1, None], ["no", "python", "file"]):
+            self.assertEqual(file_and_class({"titlePath": junk, "fullName": "p.m#t",
+                                             "labels": labels(package="p.m")}), ("p/m.py", ""))
+
+    def test_custom_sub_suite_does_not_replace_class(self):
+        # @allure.sub_suite("Smoke suite") overrides the subSuite label
+        self.assertEqual(file_and_class({
+            "fullName": "src.test.common.test_auth.TestCustomSub#test_custom",
+            "labels": labels(package="src.test.common.test_auth", subSuite="Smoke suite")}),
+            ("src/test/common/test_auth.py", "TestCustomSub"))
+
+    def test_empty_package_label_does_not_hide_a_later_one(self):
+        self.assertEqual(file_and_class({
+            "fullName": "a.b#t",
+            "labels": [{"name": "package", "value": ""}, {"name": "package", "value": "a.b"}]}),
+            ("a/b.py", ""))
+        self.assertEqual(file_and_class({"fullName": "t", "labels": labels(package="...")}), ("", ""))
+
     def test_fallbacks_without_labels(self):
         cases = {
             "pkg.mod.TestThing#test_x": ("pkg/mod.py", "TestThing"),

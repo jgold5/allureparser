@@ -87,8 +87,7 @@ def _runs_text(h: History, shown: int) -> list[str]:
                      f"{c['broken']:>6}  {c['skipped']:>5}  {len(s['retried']):>7}  "
                      f"{r.workers}{' on ' + r.host if r.host else ''}")
     if shown and len(runs) > shown:
-        lines.append(f"... {len(runs) - shown} earlier runs (use --runs 0 to list all, or see "
-                     f"the HTML report for each run's failures)")
+        lines.append(f"... {len(runs) - shown} earlier runs (use --runs 0 to list all, or --json for each run's failures)")
     return lines
 
 
@@ -282,13 +281,17 @@ th.run a:hover { text-decoration: underline; }
   line-height: 22px;
   max-width: min(560px, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border-right: 1px solid var(--border); }
-.name .tp { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.name .tp { color: var(--muted); font-size: 12px; margin-left: 8px; line-height: 1; }
+.name > * { vertical-align: top; }
+.name .tn, .name .tp { display: inline-block; line-height: 22px; max-height: 22px; }
 .name mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
 tr.grp td { background: var(--head); cursor: pointer; border-bottom: 1px solid var(--border);
   line-height: 22px; padding: 0; }
 tr.grp:hover td { background: var(--row-hover); }
-tr.grp .gin { position: sticky; left: 0; display: inline-flex; gap: 8px; align-items: baseline;
-  padding: 0 10px; white-space: nowrap; }
+tr.grp .gin { position: sticky; left: 0; display: inline-flex; gap: 8px; align-items: center;
+  padding: 0 10px; white-space: nowrap; height: 22px; vertical-align: top; line-height: 22px; }
+tr.grp:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.tbtn:disabled { opacity: .45; cursor: default; }
 tr.grp .caret { color: var(--muted); width: 10px; display: inline-block; }
 tr.grp .gfile { font-weight: 600; font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -430,6 +433,14 @@ _JS = """
     return [base.slice(cut + sep) + params, path.slice(-2).join('.')];
   }
   const groupBox = document.getElementById('groupFiles');
+  function lowerSameLength(text) {
+    let out = '';
+    for (const ch of text) {
+      const lower = ch.toLowerCase();
+      out += lower.length === ch.length ? lower : ch;
+    }
+    return out;
+  }
   D.tests.forEach(t => {
     const parts = splitName(t.n);
     t.sn = parts[0];
@@ -438,7 +449,8 @@ _JS = """
     const base = t.file ? t.file.split('/').pop() : parts[1];
     t.where = [base, t.cls].filter(Boolean).join(' \u203a ');  // flat view: file › class
     // Searched text: the full name, then the file path; the short name ends the name.
-    t.l = (t.n + (t.file ? '  ' + t.file : '')).toLowerCase();
+    t.l = lowerSameLength(t.n + (t.file ? '  ' + t.file : ''));
+    t.snl = t.l.slice(t.n.length - t.sn.length, t.n.length);
     t.snStart = t.n.length - t.sn.length;
     t.snEnd = t.n.length;
   });
@@ -448,37 +460,63 @@ _JS = """
   let shownIn = null;  // {t, c}: what the panel shows (c is null for a test summary)
   let noteCell = new Map(), noteTest = new Map(), noteRun = new Map();  // see indexNotes
   const collapsed = new Set();  // file paths whose group is collapsed
+  // While searching, matching files start open; header clicks then fold them only
+  // for that search, and the normal collapsed state comes back when it is cleared.
+  let searchClosed = new Set(), lastQuery = '';
 
   // ---- fuzzy search: every space-separated term must match, as a substring or as
   // letters in order; better matches (contiguous, at word starts, in the test name
   // rather than the path) score higher.
   function boundary(s, k) { return k === 0 || '._#/:[ -'.indexOf(s[k - 1]) >= 0; }
+  // Letters of term in order inside s[lo, hi): find where the forward scan ends, then
+  // walk back from there for the tightest window (so 'lgn' in 'large_values_login'
+  // lands on 'login'). Windows much wider than the term are not real matches.
+  function subsequence(s, term, lo, hi) {
+    let k = lo - 1;
+    for (const ch of term) {
+      k = s.indexOf(ch, k + 1);
+      if (k < 0 || k >= hi) return null;
+    }
+    const pos = new Array(term.length);
+    let j = k + 1;
+    for (let x = term.length - 1; x >= 0; x--) {
+      j = s.lastIndexOf(term[x], j - 1);
+      pos[x] = j;
+    }
+    if (pos[pos.length - 1] - pos[0] + 1 > term.length * 2 + 3) return null;
+    return pos;
+  }
+  function wordHit(s, i, len) {
+    return boundary(s, i) && (i + len >= s.length || '._#/:[ -'.indexOf(s[i + len]) >= 0);
+  }
   function matchTerm(t, term) {
     const s = t.l;
-    let i = s.indexOf(term, t.snStart);
-    if (i >= t.snEnd) i = -1;
-    if (i < 0) i = s.indexOf(term);
-    if (i >= 0) {
-      const pos = [];
-      for (let k = 0; k < term.length; k++) pos.push(i + k);
-      const inName = i >= t.snStart && i < t.snEnd;
-      return [1000 + 10 * term.length + (inName ? 300 : 0) + (boundary(s, i) ? 100 : 0) - i * 0.01, pos];
-    }
-    // Letters in order, preferring the test-name part: try it first, then the whole text.
-    for (const from of [t.snStart, 0]) {
-      const pos = [];
-      let k = from - 1, score = 0;
-      for (const ch of term) {
-        const j = s.indexOf(ch, k + 1);
-        if (j < 0 || (from && j >= t.snEnd)) { pos.length = 0; break; }
-        score += 1 + (j === k + 1 && pos.length ? 8 : 0) + (boundary(s, j) ? 5 : 0)
-          + (j >= t.snStart && j < t.snEnd ? 3 : 0) - (pos.length ? Math.min(j - k - 1, 10) * 0.2 : 0);
-        pos.push(j); k = j;
+    // The test's own name scores above its class/module path and file.
+    const regions = [[t.snStart, t.snEnd, 300], [0, t.snStart, 0], [t.snEnd, s.length, 0]];
+    let best = null;
+    for (const [lo, hi, bonus] of regions) {
+      if (hi - lo < term.length) continue;
+      const i = s.slice(lo, hi).indexOf(term);
+      let score, pos;
+      if (i >= 0) {
+        const at = lo + i;
+        pos = [];
+        for (let k = 0; k < term.length; k++) pos.push(at + k);
+        score = 1000 + 10 * term.length + bonus + (boundary(s, at) ? 100 : 0)
+          + (wordHit(s, at, term.length) ? 150 : 0) - at * 0.01;
+        if (bonus && term === t.snl) score += 500;  // the whole test name
+      } else {
+        pos = subsequence(s, term, lo, hi);
+        if (!pos) continue;
+        score = bonus / 3;
+        for (let x = 0; x < pos.length; x++) {
+          score += 1 + (x && pos[x] === pos[x - 1] + 1 ? 8 : 0) + (boundary(s, pos[x]) ? 5 : 0);
+        }
+        score -= (pos[pos.length - 1] - pos[0] + 1 - term.length);  // gaps
       }
-      // Letters scattered across a long path aren't a real match.
-      if (pos.length === term.length && pos[pos.length - 1] - pos[0] < term.length * 4) return [score, pos];
+      if (!best || score > best[0]) best = [score, pos];
     }
-    return null;
+    return best;
   }
   function fuzzy(t, terms) {
     let score = 0;
@@ -627,11 +665,25 @@ _JS = """
   }
 
   function grouped() { return groupBox.checked; }
+  function toggleGroup(f) {
+    const set = lastQuery ? searchClosed : collapsed;
+    if (set.has(f)) set.delete(f); else set.add(f);
+    apply(false);
+    const again = tbody.querySelector('tr.grp[data-file="' + CSS.escape(f) + '"]');
+    if (again && document.activeElement && document.activeElement.closest &&
+        document.activeElement.closest('tr.grp')) again.focus({preventScroll: true});
+  }
 
   function groupRow(g) {
     const tr = document.createElement('tr');
     tr.className = 'grp' + (g.open ? '' : ' closed');
     tr.dataset.file = g.file;
+    tr.tabIndex = 0;
+    tr.setAttribute('role', 'button');
+    tr.setAttribute('aria-expanded', g.open ? 'true' : 'false');
+    tr.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(g.file); }
+    });
     const cell = document.createElement('td');
     cell.colSpan = nCols;
     const inner = el('span', 'gin');
@@ -649,7 +701,9 @@ _JS = """
   function apply(resetScroll) {
     // Setting scrollTop forces a layout, so only do it when needed.
     if (resetScroll && wrap.scrollTop) wrap.scrollTop = 0;  // new filter/sort: show top matches
-    const terms = q.value.trim().toLowerCase().split(/\\s+/).filter(Boolean);
+    const query = lowerSameLength(q.value.trim());
+    if (query !== lastQuery) { searchClosed = new Set(); lastQuery = query; }
+    const terms = query.split(/\\s+/).filter(Boolean);
     let tests = [], hiddenMatches = 0;
     for (const t of sorted) {
       let m = null;
@@ -687,13 +741,17 @@ _JS = """
       } else list.sort((a, b) => a.first - b.first);
       view = [];
       for (const g of list) {
-        g.open = terms.length > 0 || !collapsed.has(g.file);
+        g.open = terms.length ? !searchClosed.has(g.file) : !collapsed.has(g.file);
         view.push({hdr: g});  // file header row
         if (g.open) view.push.apply(view, g.tests);
       }
     }
     render(true);
     count.textContent = tests.length;
+    const cb = document.getElementById('collapseAll');
+    cb.disabled = !grouped();
+    const files = new Set(tests.map(t => t.file));
+    cb.textContent = files.size && [...files].every(f => collapsed.has(f)) ? 'Expand all' : 'Collapse all';
     hint.textContent = terms.length && hiddenMatches
       ? hiddenMatches + ' more ' + (hiddenMatches === 1 ? 'match' : 'matches') + ' in unchecked groups'
       : '';
@@ -748,7 +806,10 @@ _JS = """
     }
   });
   document.addEventListener('keydown', e => {
-    if (e.key === '/' && document.activeElement !== q && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) {
+    const a = document.activeElement;
+    const typing = a && (a.tagName === 'TEXTAREA' || a.isContentEditable ||
+      (a.tagName === 'INPUT' && !/^(checkbox|radio|button|submit)$/.test(a.type)));
+    if (e.key === '/' && a !== q && !typing) {
       e.preventDefault(); q.focus(); q.select();
     }
   });
@@ -883,12 +944,7 @@ _JS = """
 
   tbody.addEventListener('click', e => {
     const g = e.target.closest('tr.grp');
-    if (g) {
-      const f = g.dataset.file;
-      if (collapsed.has(f)) collapsed.delete(f); else collapsed.add(f);
-      apply(false);
-      return;
-    }
+    if (g) { toggleGroup(g.dataset.file); return; }
     const tr = e.target.closest('tr[data-i]');
     if (!tr) return;
     const t = D.tests[+tr.dataset.i];
@@ -1473,7 +1529,7 @@ _GROUP_BOXES = [
     ("flakyOnly", "flaky", "Flaky only", "Tests with both passing and failing results"),
     ("passOnly", "passed", "Only passed", "Tests that never failed (skips ignored)"),
     ("failOnly", "failed", "Only failed", "Tests that never passed (skips ignored)"),
-    ("skipOnly", "skipped", "Only skipped", "Tests that were skipped every time"),
+    ("skipOnly", "skipped", "Only skipped", "Tests that never ran: skipped (or no result) every time"),
 ]
 
 

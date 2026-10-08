@@ -198,23 +198,45 @@ def session_id(result: dict) -> str:
 
 
 def file_and_class(result: dict) -> tuple[str, str]:
-    """Source file and class of a test. allure-pytest records the module in the
-    'package' label and the class in 'subSuite'; otherwise guess from fullName
-    ('pkg.module.Class#test' or a pytest node id 'path/test_x.py::Class::test')."""
+    """Source file and class of a test.
+
+    allure-pytest (2.14+) writes titlePath, e.g. ['src', 'test', 'v1.2', 'test_x.py',
+    'TestOuter', 'TestInner']: the exact file (dots in folder names kept) followed by
+    the classes. Otherwise use the 'package' label (dotted module) and take the class
+    from fullName, since the 'subSuite' label can be replaced with @allure.sub_suite.
+    Without labels, guess from fullName ('pkg.module.Class#test') or a pytest node id
+    ('path/test_x.py::Class::test')."""
+    title = result.get("titlePath")
+    if isinstance(title, list):
+        parts = [_text(p) for p in title if isinstance(p, str)]
+        for i, part in enumerate(parts):
+            if part.endswith(".py"):
+                return ("/".join(p for p in parts[:i + 1] if p),
+                        ".".join(p for p in parts[i + 1:] if p))
     labels = result.get("labels")
     found = {}
     for label in labels if isinstance(labels, list) else []:
         if isinstance(label, dict) and label.get("name") in ("package", "subSuite", "testClass"):
-            found.setdefault(label["name"], _text(label.get("value")))
-    module, cls = found.get("package", ""), found.get("subSuite", "")
+            value = _text(label.get("value"))
+            if value and value.strip("."):
+                found.setdefault(label["name"], value)
+    module = found.get("package", "")
     full = _text(result.get("fullName"))
-    if not module and "::" in full:  # pytest node id
+    if module:
+        cls = ""
+        if "#" in full and full.startswith(module + "."):
+            cls = full[len(module) + 1:full.rindex("#")]
+        elif "#" not in full:
+            cls = found.get("subSuite", "")
+        return module.replace(".", "/") + ".py", cls
+    if "::" in full:  # pytest node id
         parts = full.split("::")
         return parts[0], ".".join(parts[1:-1])
-    if not module and "#" in full:
+    cls = found.get("subSuite", "")
+    if "#" in full:
         left = full.rsplit("#", 1)[0].split(".")
         if len(left) > 1 and left[-1][:1].isupper():  # last segment looks like a class
-            cls = cls or left[-1]
+            cls = left[-1]
             left = left[:-1]
         module = ".".join(left)
     if not module and found.get("testClass"):

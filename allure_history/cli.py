@@ -63,7 +63,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="how many flaky tests to print (0 = all, default 20)")
     p.add_argument("--runs", type=non_negative, default=15, metavar="N",
                    help="per-execution mode: how many of the most recent runs to list in the "
-                        "terminal (0 = all, default 15); the HTML lists every run")
+                        "terminal (0 = all, default 15); the JSON output lists every run")
     p.add_argument("--all", action="store_true",
                    help="print all tests in the terminal table, not just flaky ones")
     p.add_argument("--title", default="Test History", help="title for the HTML report")
