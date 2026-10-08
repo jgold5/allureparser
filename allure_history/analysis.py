@@ -52,6 +52,8 @@ class TestHistory:
     key: str
     name: str
     cells: list[Cell]
+    file: str = ""
+    cls: str = ""
     flips: int = 0
     flip_rate: float = 0.0
     counts: dict[str, int] = field(default_factory=dict)
@@ -121,9 +123,12 @@ def rank_key(t: TestHistory):
 
 def build_history(runs: list[Run], min_runs: int = 1) -> History:
     names: dict[str, str] = {}
+    where: dict[str, tuple[str, str]] = {}
     for run in runs:
         for key, tr in run.tests.items():
             names[key] = tr.name  # latest run's name wins if it changed
+            if tr.file or tr.cls or key not in where:
+                where[key] = (tr.file, tr.cls)
 
     tests = []
     for key, name in names.items():
@@ -141,7 +146,7 @@ def build_history(runs: list[Run], min_runs: int = 1) -> History:
                     when=tr.attempts[-1].start,
                     stop=tr.attempts[-1].stop,
                 ))
-        th = TestHistory(key=key, name=name, cells=cells)
+        th = TestHistory(key=key, name=name, cells=cells, file=where[key][0], cls=where[key][1])
         _score(th)
         if th.runs_present >= min_runs:
             tests.append(th)
@@ -156,10 +161,13 @@ def build_execution_history(runs: list[Run], last: int = 0, min_executions: int 
     this for a folder holding results of many runs mixed together. Retries are just more
     executions, so fail-then-pass on retry counts as a flip."""
     names: dict[str, str] = {}
+    where: dict[str, tuple[str, str]] = {}
     execs: dict[str, dict] = {}
     for run in runs:
         for key, tr in run.tests.items():
             names[key] = tr.name
+            if tr.file or tr.cls or key not in where:
+                where[key] = (tr.file, tr.cls)
             seen = execs.setdefault(key, {})
             for a in tr.attempts:
                 # The same execution can arrive twice (e.g. a snapshot and its raw folder)
@@ -185,7 +193,8 @@ def build_execution_history(runs: list[Run], last: int = 0, min_executions: int 
         cells = [Cell(status=None) for _ in range(width - len(attempts))]
         cells += [Cell(status=a.status, attempts=[a.status], message=a.message,
                        location=a.location, when=a.start, stop=a.stop) for a in attempts]
-        th = TestHistory(key=key, name=names[key], cells=cells)
+        th = TestHistory(key=key, name=names[key], cells=cells, file=where[key][0],
+                         cls=where[key][1])
         _score(th)
         tests.append(th)
     tests.sort(key=rank_key)

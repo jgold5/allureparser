@@ -67,6 +67,8 @@ class TestRun:
     key: str
     name: str
     attempts: list[Attempt]
+    file: str = ""  # e.g. "src/tests/test_api.py"
+    cls: str = ""   # test class, if any
 
     @property
     def status(self) -> str:
@@ -195,6 +197,33 @@ def session_id(result: dict) -> str:
     return f"{host}:{pid}" if host and pid else ""
 
 
+def file_and_class(result: dict) -> tuple[str, str]:
+    """Source file and class of a test. allure-pytest records the module in the
+    'package' label and the class in 'subSuite'; otherwise guess from fullName
+    ('pkg.module.Class#test' or a pytest node id 'path/test_x.py::Class::test')."""
+    labels = result.get("labels")
+    found = {}
+    for label in labels if isinstance(labels, list) else []:
+        if isinstance(label, dict) and label.get("name") in ("package", "subSuite", "testClass"):
+            found.setdefault(label["name"], _text(label.get("value")))
+    module, cls = found.get("package", ""), found.get("subSuite", "")
+    full = _text(result.get("fullName"))
+    if not module and "::" in full:  # pytest node id
+        parts = full.split("::")
+        return parts[0], ".".join(parts[1:-1])
+    if not module and "#" in full:
+        left = full.rsplit("#", 1)[0].split(".")
+        if len(left) > 1 and left[-1][:1].isupper():  # last segment looks like a class
+            cls = cls or left[-1]
+            left = left[:-1]
+        module = ".".join(left)
+    if not module and found.get("testClass"):
+        module, _, cls = found["testClass"].rpartition(".")
+    if not module:
+        return "", cls
+    return module.replace(".", "/") + ".py", cls
+
+
 def is_results_dir(path: Path) -> bool:
     return path.is_dir() and any(path.glob("*-result.json"))
 
@@ -287,6 +316,7 @@ def load_run(path: Path, run_id: Optional[str] = None) -> Run:
     )
 
     grouped: dict[str, tuple[str, list[Attempt]]] = {}
+    where: dict[str, tuple[str, str]] = {}
     for f in sorted(path.glob("*-result.json")):
         try:
             result = _read_json(f)
@@ -310,6 +340,7 @@ def load_run(path: Path, run_id: Optional[str] = None) -> Run:
         )
         key = identity_key(result)
         grouped.setdefault(key, (display_name(result), []))[1].append(attempt)
+        where.setdefault(key, file_and_class(result))
         if attempt.start is not None:
             run.start = attempt.start if run.start is None else min(run.start, attempt.start)
 
@@ -318,7 +349,8 @@ def load_run(path: Path, run_id: Optional[str] = None) -> Run:
         # displayed (final) result; attempts without a start time count as oldest.
         attempts.sort(key=lambda a: (a.start is not None, a.start or 0,
                                      a.stop is not None, a.stop or 0))
-        run.tests[key] = TestRun(key=key, name=name, attempts=attempts)
+        file, cls = where.get(key, ("", ""))
+        run.tests[key] = TestRun(key=key, name=name, attempts=attempts, file=file, cls=cls)
     return run
 
 

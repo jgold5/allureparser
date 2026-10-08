@@ -38,7 +38,7 @@ def to_dict(run: Run) -> dict:
         "url": run.url,
         "start": run.start,
         "tests": [
-            {"k": t.key, "n": t.name,
+            {"k": t.key, "n": t.name, "f": t.file, "c": t.cls,
              "a": [[a.status, a.start, a.stop, a.message, a.location, a.session]
                    for a in t.attempts]}
             for t in run.tests.values()
@@ -109,7 +109,8 @@ def read_snapshot(path: Path) -> Optional[Run]:
                                     session=_text(a[5])[:200]))
         if attempts:
             run.tests[key] = TestRun(key=key, name=_text(entry.get("n")) or key,
-                                     attempts=attempts)
+                                     attempts=attempts, file=_text(entry.get("f"))[:500],
+                                     cls=_text(entry.get("c"))[:200])
     return run
 
 

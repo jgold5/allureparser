@@ -142,15 +142,14 @@ class RunDetectionTests(unittest.TestCase):
             "location": "tests/test_x.py:7", "attempts": ["failed"]}])
 
         page = render_html(h)
-        self.assertIn('id="runs"', page)
-        self.assertIn("tests#&lt;b&gt;flaky&lt;/b&gt;", page)
+        self.assertNotIn('id="runs"', page)  # no separate runs section in the HTML
         self.assertNotIn("<b>flaky</b>", page.split('<script id="history-data"')[0])
         pd = page_data(page)
         t = next(x for x in pd["tests"] if "flaky" in x["n"])
         self.assertEqual(pd["msgs"][t["m"]["1"]], "AssertionError: boom")
         self.assertEqual(t["u"], [1, 2, 3])  # each execution's run number
         self.assertEqual(pd["nruns"], 3)
-        self.assertIn('id="run-2"', page)
+        self.assertIn("<span>runs</span>", page)  # run count still in the header
         self.assertIn("Runs found in the results: 3", render_text(h, runs_shown=0))
 
     def test_per_run_mode_has_no_runs_section(self):

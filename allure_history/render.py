@@ -144,13 +144,13 @@ def render_csv(h: History) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(
-        ["test", "flaky", "flips", "flip_rate", "in_run_flaky", "passed", "failed",
+        ["test", "file", "class", "flaky", "flips", "flip_rate", "in_run_flaky", "passed", "failed",
          "broken", "skipped", "runs_present", "last_status"]
         + [_csv_text(r.label) for r in h.runs]
     )
     for t in h.tests:
         w.writerow(
-            [_csv_text(t.name), int(t.is_flaky), t.flips, f"{t.flip_rate:.3f}", t.in_run_flaky,
+            [_csv_text(t.name), _csv_text(t.file), _csv_text(t.cls), int(t.is_flaky), t.flips, f"{t.flip_rate:.3f}", t.in_run_flaky,
              t.counts["passed"], t.counts["failed"], t.counts["broken"], t.counts["skipped"],
              t.runs_present, t.last_status or ""]
             + [c.status or "" for c in t.cells]
@@ -173,6 +173,8 @@ def to_dict(h: History) -> dict:
             {
                 "key": t.key,
                 "name": t.name,
+                "file": t.file,
+                "class": t.cls,
                 "flaky": t.is_flaky,
                 "flips": t.flips,
                 "flip_rate": round(t.flip_rate, 4),
@@ -226,14 +228,14 @@ def render_json(h: History) -> str:
 _CSS = """
 :root {
   --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de; --head: #f6f8fa;
-  --row-hover: #f3f6fa;
+  --row-hover: #f3f6fa; --mark: #fff3a3;
   --passed: #2da44e; --failed: #cf222e; --broken: #d4a72c; --skipped: #8c959f;
   --unknown: #8250df; --none: transparent; --cell-fg: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --border: #30363d; --head: #161b22;
-    --row-hover: #1c2129;
+    --row-hover: #1c2129; --mark: #6b5a14;
     --passed: #238636; --failed: #da3633; --broken: #bb8009; --skipped: #484f58;
     --unknown: #8957e5;
   }
@@ -252,6 +254,7 @@ h1 { font-size: 20px; margin: 0 0 4px; }
   border-radius: 6px; background: var(--bg); color: var(--fg); min-width: 260px; }
 .controls select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--fg); }
+.controls .muted { color: var(--muted); font-size: 12px; }
 .legend { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
 .legend i { display: inline-block; width: 14px; height: 14px; border-radius: 3px;
   vertical-align: -3px; margin-right: 4px; }
@@ -267,8 +270,24 @@ th.run a { color: inherit; text-decoration: none; }
 th.run a:hover { text-decoration: underline; }
 .name { position: sticky; left: 0; background: var(--bg); z-index: 1; padding: 0 10px;
   line-height: 22px;
-  max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: min(560px, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border-right: 1px solid var(--border); }
+.name .tp { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.name mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
+tr.grp td { background: var(--head); cursor: pointer; border-bottom: 1px solid var(--border);
+  line-height: 22px; padding: 0; }
+tr.grp:hover td { background: var(--row-hover); }
+tr.grp .gin { position: sticky; left: 0; display: inline-flex; gap: 8px; align-items: baseline;
+  padding: 0 10px; white-space: nowrap; }
+tr.grp .caret { color: var(--muted); width: 10px; display: inline-block; }
+tr.grp .gfile { font-weight: 600; font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+tr.grp .gmeta { color: var(--muted); font-size: 12px; }
+.tbtn { border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+#hint { margin-left: 6px; font-size: 12px; }
+#dbody .fullname { color: var(--muted); font-size: 12px; margin: -6px 0 12px;
+  overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 thead .name { z-index: 3; background: var(--head); text-align: left; vertical-align: bottom;
   padding-bottom: 4px; }
 .num { padding: 0 8px; line-height: 22px; text-align: right; font-variant-numeric: tabular-nums;
@@ -319,24 +338,10 @@ td.name { cursor: pointer; }
   #detail { top: auto; height: 70vh; width: 100vw; border-left: 0;
     border-top: 1px solid var(--border); }
 }
-.runs { margin-top: 28px; }
-.runs h2 { font-size: 17px; margin: 0 0 4px; }
-.runs .note { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
-.runs details { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; }
-.runs summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 12px; flex-wrap: wrap;
-  align-items: center; font-variant-numeric: tabular-nums; }
-.runs summary .idx { font-weight: 600; min-width: 44px; }
-.runs summary .when { min-width: 150px; }
-.runs summary .muted { color: var(--muted); }
 .chip { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px;
   color: var(--cell-fg); line-height: 18px; }
 .chip.passed { background: var(--passed); } .chip.failed { background: var(--failed); }
 .chip.broken { background: var(--broken); } .chip.skipped { background: var(--skipped); }
-.runs ul { margin: 0; padding: 4px 12px 10px 30px; }
-.runs li { margin: 3px 0; overflow-wrap: anywhere; }
-.runs li .loc { color: var(--muted); font-size: 12px; }
-.runs li .msg { color: var(--muted); font-size: 12px; display: block; }
-.runs .sub-h { padding: 2px 12px; font-size: 12px; font-weight: 600; color: var(--muted); }
 tbody tr:not(.spacer) { height: 23px; }
 tr.spacer td { padding: 0; border: 0; height: 0; }
 tr.spacer:hover td { background: none; }
@@ -358,13 +363,88 @@ _JS = """
   const wrap = document.querySelector('.wrap');
   const tbody = document.querySelector('tbody');
   const q = document.getElementById('q');
-  const only = document.getElementById('flakyOnly');
+  // Group filters: every test is in exactly one group (t.g, computed in Python).
+  // Checked groups are shown; with none checked, every test is.
+  const boxes = [['flakyOnly', 'flaky'], ['passOnly', 'passed'], ['failOnly', 'failed'],
+                 ['skipOnly', 'skipped']].map(b => [document.getElementById(b[0]), b[1]]);
+  function inGroups(t) {
+    const on = boxes.filter(b => b[0].checked);
+    return !on.length || on.some(b => b[1] === t.g);
+  }
   const count = document.getElementById('shown');
   const nCols = 4 + D.runs.length;
-  D.tests.forEach(t => { t.l = t.n.toLowerCase(); });
+  // 'src.tests.test_file.TestClass#test_name[p=1]' -> short 'test_name[p=1]' shown first,
+  // and 'test_file.TestClass' after it in grey, so truncation hides the least useful part.
+  function splitName(n) {
+    const b = n.indexOf('[');
+    const base = b > 0 ? n.slice(0, b) : n, params = b > 0 ? n.slice(b) : '';
+    let cut = base.lastIndexOf('#'), sep = 1;
+    if (cut < 0) { cut = base.lastIndexOf('::'); sep = 2; }   // pytest node id
+    if (cut < 0) { cut = base.lastIndexOf('.'); sep = 1; }
+    if (cut < 0) return [n, ''];
+    const path = base.slice(0, cut).split(/::|[./]/).filter(Boolean);
+    return [base.slice(cut + sep) + params, path.slice(-2).join('.')];
+  }
+  const groupBox = document.getElementById('groupFiles');
+  D.tests.forEach(t => {
+    const parts = splitName(t.n);
+    t.sn = parts[0];
+    t.file = t.fi >= 0 ? D.msgs[t.fi] : '';
+    t.cls = t.cl || '';
+    const base = t.file ? t.file.split('/').pop() : parts[1];
+    t.where = [base, t.cls].filter(Boolean).join(' \u203a ');  // flat view: file › class
+    // Searched text: the full name, then the file path; the short name ends the name.
+    t.l = (t.n + (t.file ? '  ' + t.file : '')).toLowerCase();
+    t.snStart = t.n.length - t.sn.length;
+    t.snEnd = t.n.length;
+  });
 
-  let sorted = D.tests.slice(), view = sorted, rowH = 23, measured = false, first = -1, last = -1;
+  let sorted = D.tests.slice(), view = [], rowH = 23, measured = false, first = -1, last = -1;
   let sel = null;  // {t, c}: the cell shown in the detail panel
+  const collapsed = new Set();  // file paths whose group is collapsed
+
+  // ---- fuzzy search: every space-separated term must match, as a substring or as
+  // letters in order; better matches (contiguous, at word starts, in the test name
+  // rather than the path) score higher.
+  function boundary(s, k) { return k === 0 || '._#/:[ -'.indexOf(s[k - 1]) >= 0; }
+  function matchTerm(t, term) {
+    const s = t.l;
+    let i = s.indexOf(term, t.snStart);
+    if (i >= t.snEnd) i = -1;
+    if (i < 0) i = s.indexOf(term);
+    if (i >= 0) {
+      const pos = [];
+      for (let k = 0; k < term.length; k++) pos.push(i + k);
+      const inName = i >= t.snStart && i < t.snEnd;
+      return [1000 + 10 * term.length + (inName ? 300 : 0) + (boundary(s, i) ? 100 : 0) - i * 0.01, pos];
+    }
+    // Letters in order, preferring the test-name part: try it first, then the whole text.
+    for (const from of [t.snStart, 0]) {
+      const pos = [];
+      let k = from - 1, score = 0;
+      for (const ch of term) {
+        const j = s.indexOf(ch, k + 1);
+        if (j < 0 || (from && j >= t.snEnd)) { pos.length = 0; break; }
+        score += 1 + (j === k + 1 && pos.length ? 8 : 0) + (boundary(s, j) ? 5 : 0)
+          + (j >= t.snStart && j < t.snEnd ? 3 : 0) - (pos.length ? Math.min(j - k - 1, 10) * 0.2 : 0);
+        pos.push(j); k = j;
+      }
+      // Letters scattered across a long path aren't a real match.
+      if (pos.length === term.length && pos[pos.length - 1] - pos[0] < term.length * 4) return [score, pos];
+    }
+    return null;
+  }
+  function fuzzy(t, terms) {
+    let score = 0;
+    const pos = [];
+    for (const term of terms) {
+      const m = matchTerm(t, term);
+      if (!m) return null;
+      score += m[0];
+      pos.push.apply(pos, m[1]);
+    }
+    return [score, pos];
+  }
 
   function spacer() {
     const tr = document.createElement('tr'), td = document.createElement('td');
@@ -412,7 +492,25 @@ _JS = """
       const b = document.createElement('span');
       b.className = 'flaky-badge'; b.textContent = 'flaky'; name.appendChild(b);
     }
-    name.appendChild(document.createTextNode(t.n));
+    const tn = el('span', 'tn');
+    const hits = t.hit ? new Set(t.hit.filter(k => k >= t.snStart && k < t.snEnd)) : null;
+    if (hits && hits.size) {
+      let run = '', marked = false;
+      const flush = () => {
+        if (!run) return;
+        tn.appendChild(marked ? el('mark', '', run) : document.createTextNode(run));
+        run = '';
+      };
+      for (let k = 0; k < t.sn.length; k++) {
+        const m = hits.has(t.snStart + k);
+        if (m !== marked) { flush(); marked = m; }
+        run += t.sn[k];
+      }
+      flush();
+    } else tn.textContent = t.sn;
+    name.appendChild(tn);
+    const where = grouped() ? t.cls : t.where;
+    if (where) name.appendChild(el('span', 'tp', where));
     tr.appendChild(name);
     tr.appendChild(td('num', String(t.f)));
     tr.appendChild(td('num', Math.round(t.r * 100) + '%'));
@@ -464,24 +562,90 @@ _JS = """
     bottomPad.firstChild.style.height = ((n - end) * rowH) + 'px';
     const frag = document.createDocumentFragment();
     frag.appendChild(topPad);
-    for (let i = start; i < end; i++) frag.appendChild(row(view[i]));
+    for (let i = start; i < end; i++) frag.appendChild(view[i].hdr ? groupRow(view[i].hdr) : row(view[i]));
     frag.appendChild(bottomPad);
     tbody.replaceChildren(frag);
     if (!measured && end > start) {
       measured = true;
-      const h = tbody.rows[1].getBoundingClientRect().height;
+      const probe = [...tbody.rows].find(r => r.dataset.i !== undefined) || tbody.rows[1];
+      const h = probe.getBoundingClientRect().height;
       if (h > 0 && Math.abs(h - rowH) > 0.5) { rowH = h; render(true); }
     }
+  }
+
+  function grouped() { return groupBox.checked; }
+
+  function groupRow(g) {
+    const tr = document.createElement('tr');
+    tr.className = 'grp' + (g.open ? '' : ' closed');
+    tr.dataset.file = g.file;
+    const cell = document.createElement('td');
+    cell.colSpan = nCols;
+    const inner = el('span', 'gin');
+    inner.appendChild(el('span', 'caret', g.open ? '\u25be' : '\u25b8'));
+    inner.appendChild(el('span', 'gfile', g.file || '(no file recorded)'));
+    const bits = [g.tests.length + (g.tests.length === 1 ? ' test' : ' tests')];
+    if (g.flaky) bits.push(g.flaky + ' flaky');
+    if (g.failing) bits.push(g.failing + ' never passed');
+    inner.appendChild(el('span', 'gmeta', bits.join(' \u00b7 ')));
+    cell.appendChild(inner);
+    tr.appendChild(cell);
+    return tr;
   }
 
   function apply(resetScroll) {
     // Setting scrollTop forces a layout, so only do it when needed.
     if (resetScroll && wrap.scrollTop) wrap.scrollTop = 0;  // new filter/sort: show top matches
-    const term = q.value.trim().toLowerCase();
-    view = sorted.filter(t => (!only.checked || t.k) && (!term || t.l.includes(term)));
+    const terms = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    let tests = [], hiddenMatches = 0;
+    for (const t of sorted) {
+      let m = null;
+      if (terms.length) {
+        m = fuzzy(t, terms);
+        if (!m) continue;
+      }
+      if (!inGroups(t)) { hiddenMatches++; continue; }
+      t.hit = m ? m[1] : null;
+      t.score = m ? m[0] : 0;
+      tests.push(t);
+    }
+    // While searching (and no column sort was chosen), best matches first.
+    if (terms.length && sortKey === null) tests.sort((a, b) => b.score - a.score || a.i - b.i);
+
+    if (!grouped()) {
+      view = tests;
+    } else {
+      const groups = new Map();
+      tests.forEach((t, order) => {
+        let g = groups.get(t.file);
+        if (!g) {
+          g = {file: t.file, tests: [], flaky: 0, failing: 0, first: order};
+          groups.set(t.file, g);
+        }
+        g.tests.push(t);
+        if (t.g === 'flaky') g.flaky++;
+        if (t.g === 'failed') g.failing++;
+      });
+      // Groups follow their best-placed test, so the overall order still wins
+      // (most flaky / best match / chosen column first). Sorting by name sorts files.
+      let list = [...groups.values()];
+      if (sortKey === 'name') {
+        list.sort((a, b) => (asc ? 1 : -1) * a.file.localeCompare(b.file));
+      } else list.sort((a, b) => a.first - b.first);
+      view = [];
+      for (const g of list) {
+        g.open = terms.length > 0 || !collapsed.has(g.file);
+        view.push({hdr: g});  // file header row
+        if (g.open) view.push.apply(view, g.tests);
+      }
+    }
     render(true);
-    count.textContent = view.length;
+    count.textContent = tests.length;
+    hint.textContent = terms.length && hiddenMatches
+      ? hiddenMatches + ' more ' + (hiddenMatches === 1 ? 'match' : 'matches') + ' in unchecked groups'
+      : '';
   }
+  const hint = document.getElementById('hint');
 
   // Typing fast re-filters at most once per frame.
   let applyPending = false;
@@ -491,7 +655,7 @@ _JS = """
     requestAnimationFrame(() => { applyPending = false; apply(true); });
   }
 
-  const KEY = {name: t => t.l, flips: t => t.f, rate: t => t.r, fails: t => t.x};
+  const KEY = {name: t => t.sn.toLowerCase(), flips: t => t.f, rate: t => t.r, fails: t => t.x};
   let sortKey = null, asc = false;
   document.querySelectorAll('th[data-sort]').forEach(th => th.addEventListener('click', () => {
     const k = th.dataset.sort, get = KEY[k];
@@ -513,7 +677,28 @@ _JS = """
   });
   window.addEventListener('resize', () => { viewportH = 0; render(true); });
   q.addEventListener('input', applySoon);
-  only.addEventListener('change', () => apply(true));
+  boxes.forEach(b => b[0].addEventListener('change', () => apply(true)));
+  groupBox.addEventListener('change', () => apply(true));
+  document.getElementById('collapseAll').addEventListener('click', () => {
+    const files = new Set(D.tests.map(t => t.file));
+    const allClosed = [...files].every(f => collapsed.has(f));
+    collapsed.clear();
+    if (!allClosed) files.forEach(f => collapsed.add(f));
+    apply(false);
+  });
+  q.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && q.value) { q.value = ''; apply(true); e.stopPropagation(); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();  // else the same keypress activates the panel's focused close button
+      const t = view.find(x => !x.hdr);
+      if (t) showTest(t);
+    }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && document.activeElement !== q && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) {
+      e.preventDefault(); q.focus(); q.select();
+    }
+  });
 
   // ---- detail panel: click a cell for that execution, a test name for the test
   const panel = document.getElementById('detail');
@@ -544,15 +729,7 @@ _JS = """
   }
   function runLink(t, i) {
     const u = t.u && t.u[i];
-    if (u) {
-      const b = el('button', 'link', 'Run #' + u + ' of ' + D.nruns);
-      b.type = 'button';
-      b.addEventListener('click', () => {
-        const d = document.getElementById('run-' + u);
-        if (d) { d.open = true; d.scrollIntoView({block: 'start'}); }
-      });
-      return b;
-    }
+    if (u) return 'Run #' + u + ' of ' + D.nruns;
     if (D.pe) return null;
     const url = D.urls[i];
     if (url) {
@@ -575,10 +752,12 @@ _JS = """
     sel = {t: t, c: i};
     const code = t.s[i];
     body.replaceChildren();
-    const h = el('h3', '', t.n);
     body.appendChild(chip(code));
-    body.appendChild(h);
+    body.appendChild(el('h3', '', t.sn));
+    body.appendChild(el('div', 'fullname', t.n));
     const dl = el('dl');
+    field(dl, 'File', t.file);
+    field(dl, 'Class', t.cls);
     field(dl, 'Run', runLink(t, i));
     const ms = startMs(t, i);
     field(dl, 'Started', ms !== null ? utc(ms, true) : '');
@@ -606,8 +785,11 @@ _JS = """
   function showTest(t) {
     sel = null;
     body.replaceChildren();
-    body.appendChild(el('h3', '', t.n));
+    body.appendChild(el('h3', '', t.sn));
+    body.appendChild(el('div', 'fullname', t.n));
     const dl = el('dl');
+    field(dl, 'File', t.file);
+    field(dl, 'Class', t.cls);
     field(dl, 'Flaky', t.k ? 'yes' : 'no');
     field(dl, 'Flips', t.f + ' (' + Math.round(t.r * 100) + '% of chances)');
     field(dl, 'Fails', t.x + ' of ' + t.p + (D.pe ? ' executions' : ' runs'));
@@ -640,6 +822,13 @@ _JS = """
   }
 
   tbody.addEventListener('click', e => {
+    const g = e.target.closest('tr.grp');
+    if (g) {
+      const f = g.dataset.file;
+      if (collapsed.has(f)) collapsed.delete(f); else collapsed.add(f);
+      apply(false);
+      return;
+    }
     const tr = e.target.closest('tr[data-i]');
     if (!tr) return;
     const t = D.tests[+tr.dataset.i];
@@ -704,6 +893,7 @@ def _page_data(h: History) -> dict:
             "i": rank, "n": t.name, "k": int(t.is_flaky), "f": t.flips,
             "r": round(t.flip_rate, 4), "x": t.counts["failed"] + t.counts["broken"],
             "p": t.runs_present, "s": "".join(_CODE.get(c.status, "?") for c in t.cells),
+            "g": test_group(t), "fi": msg(t.file) if t.file else -1, "cl": t.cls,
             "lf": msg(_reasons_text(t)) if t.failure_reasons else -1,
         }
         if attempts:
@@ -740,56 +930,36 @@ def _script_json(data) -> str:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False).replace("<", "\\u003c")
 
 
-_RUN_LIST_LIMIT = 200
+def test_group(t: TestHistory) -> str:
+    """The one filter group a test belongs to: flaky (mixed results), failed (never
+    passed), passed (never failed) or skipped (skipped every time). Skips are ignored
+    for passed/failed, like flip counting."""
+    if t.is_flaky:
+        return "flaky"
+    if t.counts["failed"] + t.counts["broken"]:
+        return "failed"
+    if t.counts["passed"]:
+        return "passed"
+    return "skipped"
 
 
-def _runs_html(h: History) -> str:
-    runs = h.detected_runs
-    if not runs:
-        return ""
-    items = []
-    for r in reversed(runs):  # newest first
-        s = _run_summary(r)
-        c = s["counts"]
-        chips = "".join(f'<span class="chip {k}" title="{k}">{c[k]} {k}</span>'
-                        for k in ("passed", "failed", "broken", "skipped") if c[k])
-        started = _e(_run_time(r.start)) if r.start else "unknown time"
-        workers = f"{r.workers} workers" if r.workers > 1 else "1 process"
-        where = f" on {_e(r.host)}" if r.host else ""
-        retried = (f'<span class="muted">{len(s["retried"])} passed after retry</span>'
-                   if s["retried"] else "")
-        body = []
-        if s["failures"]:
-            body.append('<div class="sub-h">Failed / broken</div><ul>')
-            for e, st in s["failures"][:_RUN_LIST_LIMIT]:
-                a = e.attempt
-                loc = f' <span class="loc">at {_e(a.location)}</span>' if a.location else ""
-                msg = (f'<span class="msg" title="{_e(a.message)}">{_e(first_line(a.message))}</span>'
-                       if a.message else "")
-                tries = f' <span class="loc">({_e(" → ".join(st))})</span>' if len(st) > 1 else ""
-                body.append(f'<li><span class="chip {a.status}">{a.status}</span> '
-                            f'{_e(e.name)}{loc}{tries}{msg}</li>')
-            if len(s["failures"]) > _RUN_LIST_LIMIT:
-                body.append(f'<li class="loc">… and {len(s["failures"]) - _RUN_LIST_LIMIT} more '
-                            f'(see the JSON output)</li>')
-            body.append("</ul>")
-        if s["retried"]:
-            body.append('<div class="sub-h">Passed after retry</div><ul>')
-            for e, st in s["retried"][:_RUN_LIST_LIMIT]:
-                body.append(f'<li>{_e(e.name)} <span class="loc">({_e(" → ".join(st))})</span></li>')
-            body.append("</ul>")
-        if not body:
-            body.append('<ul><li class="loc">Everything passed.</li></ul>')
-        items.append(
-            f'<details id="run-{r.index}"><summary><span class="idx">#{r.index}</span>'
-            f'<span class="when">{started}</span>'
-            f'<span class="muted">{_e(_duration(s["duration"]))}</span>'
-            f'<span>{len(s["final"])} tests</span>{chips}{retried}'
-            f'<span class="muted">{workers}{where}</span></summary>{"".join(body)}</details>')
-    return (f'<section class="runs" id="runs"><h2>Runs ({len(runs)})</h2>'
-            f'<div class="note">Found by the pytest process that wrote each result; parallel '
-            f'workers count as one run. Newest first. Click a run to see what failed.</div>'
-            f'{"".join(items)}</section>')
+_GROUP_BOXES = [
+    ("flakyOnly", "flaky", "Flaky only", "Tests with both passing and failing results"),
+    ("passOnly", "passed", "Only passed", "Tests that never failed (skips ignored)"),
+    ("failOnly", "failed", "Only failed", "Tests that never passed (skips ignored)"),
+    ("skipOnly", "skipped", "Only skipped", "Tests that were skipped every time"),
+]
+
+
+def _filter_boxes(h: History) -> str:
+    n = {group: 0 for _, group, _, _ in _GROUP_BOXES}
+    for t in h.tests:
+        n[test_group(t)] += 1
+    return "".join(
+        f'<label title="{tip}"><input id="{id_}" type="checkbox"'
+        f'{" checked" if group == "flaky" and n["flaky"] else ""}> {label} '
+        f'<span class="muted">({n[group]})</span></label>'
+        for id_, group, label, tip in _GROUP_BOXES)
 
 
 def render_html(h: History, title: str = "Test History") -> str:
@@ -832,8 +1002,7 @@ def render_html(h: History, title: str = "Test History") -> str:
                    "the latest is in the rightmost column")
         first_stat = f'<div class="stat"><b>{h.executions}</b><span>executions</span></div>'
         if h.detected_runs:
-            first_stat += (f'<a class="stat" href="#runs" style="color:inherit;text-decoration:none">'
-                           f'<b>{len(h.detected_runs)}</b><span>runs &darr;</span></a>')
+            first_stat += f'<div class="stat"><b>{len(h.detected_runs)}</b><span>runs</span></div>'
     else:
         starts = [r.start for r in h.runs if r.start]
         heading = "Runs oldest &rarr; newest, left to right"
@@ -859,10 +1028,13 @@ def render_html(h: History, title: str = "Test History") -> str:
   <div class="stat"><b>{sum(t.flips for t in flaky)}</b><span>total flips</span></div>
 </div>
 <div class="controls">
-  <input id="q" type="search" placeholder="Filter tests&hellip;" aria-label="Filter tests">
-  <label><input id="flakyOnly" type="checkbox"{' checked' if flaky else ''}> Flaky only</label>
+  <input id="q" type="search" placeholder="Search tests, files&hellip;  ( / )" aria-label="Search tests"
+    autocomplete="off" spellcheck="false">
+  <label title="Show tests under their source file"><input id="groupFiles" type="checkbox" checked> Group by file</label>
+  <button type="button" id="collapseAll" class="tbtn" title="Collapse or expand all files">Collapse all</button>
+  {_filter_boxes(h)}
   <span class="legend">{legend}</span>
-  <span style="color:var(--muted)"><span id="shown">{len(h.tests)}</span> shown</span>
+  <span style="color:var(--muted)"><span id="shown">{len(h.tests)}</span> shown <span id="hint"></span></span>
 </div>
 <!-- must come before the matrix: the page script inside it looks this panel up -->
 <aside id="detail" role="dialog" aria-label="Execution details" hidden>
@@ -875,7 +1047,6 @@ def render_html(h: History, title: str = "Test History") -> str:
   <div id="dbody"></div>
 </aside>
 {table}
-{_runs_html(h)}
 </body>
 </html>
 """
