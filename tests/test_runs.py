@@ -147,7 +147,10 @@ class RunDetectionTests(unittest.TestCase):
         self.assertNotIn("<b>flaky</b>", page.split('<script id="history-data"')[0])
         pd = page_data(page)
         t = next(x for x in pd["tests"] if "flaky" in x["n"])
-        self.assertIn("run #2", pd["msgs"][t["m"]["1"]])
+        self.assertEqual(pd["msgs"][t["m"]["1"]], "AssertionError: boom")
+        self.assertEqual(t["u"], [1, 2, 3])  # each execution's run number
+        self.assertEqual(pd["nruns"], 3)
+        self.assertIn('id="run-2"', page)
         self.assertIn("Runs found in the results: 3", render_text(h, runs_shown=0))
 
     def test_per_run_mode_has_no_runs_section(self):

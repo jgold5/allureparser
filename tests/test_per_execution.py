@@ -138,7 +138,10 @@ class PerExecutionTests(unittest.TestCase):
         page = page_data(render_html(h))
         self.assertEqual(page["pe"], 1)
         pt = next(x for x in page["tests"] if x["n"] == "suite.t")
-        self.assertTrue(page["msgs"][pt["m"]["1"]].startswith("2023-11-14 22:14 UTC\nat "))
+        self.assertEqual(page["msgs"][pt["m"]["1"]], "AssertionError: nope")
+        self.assertEqual(page["t0"], 1_700_000_000_000)
+        self.assertEqual(pt["t"], [0, 60])  # seconds after t0
+        self.assertEqual(pt["d"], [100, 100])
         self.assertIn("executions", render_html(h))
         rows = render_csv(h).splitlines()
         self.assertTrue(rows[0].endswith("−1,latest"))

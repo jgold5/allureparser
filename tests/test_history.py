@@ -190,8 +190,13 @@ class HistoryTests(unittest.TestCase):
         rows = {t["n"]: t for t in data["tests"]}
         self.assertEqual(rows["suite.flappy"]["s"], "PFP")
         self.assertEqual(rows["suite.flappy"]["k"], 1)
-        self.assertEqual(data["msgs"][rows["suite.flappy"]["m"]["1"]],
-                         "at tests/test_flappy.py:10\nboom")
+        flappy = rows["suite.flappy"]
+        self.assertEqual(data["msgs"][flappy["m"]["1"]], "boom")
+        self.assertEqual(data["msgs"][flappy["o"]["1"]], "tests/test_flappy.py:10")
+        # per-cell start (seconds after t0) and duration (ms), for the detail panel
+        self.assertEqual(len(flappy["t"]), 3)
+        self.assertEqual(flappy["d"], [100, 100, 100])
+        self.assertEqual(data["urls"], [None, None, None])
         self.assertEqual(data["msgs"][rows["suite.flappy"]["lf"]],
                          "Failure reasons:\n  1\u00d7 boom  at tests/test_flappy.py:10")
         self.assertIn("suite.<script>alert(1)</script>", rows)
@@ -208,10 +213,20 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(t["s"], "FPF")
         self.assertEqual(t["a"], {"0": "failed \u2192 failed", "1": "failed \u2192 passed",
                                   "2": "failed \u2192 failed"})
-        self.assertEqual(data["msgs"][t["m"]["0"]], "at tests/test_t.py:10\nsame error")
+        self.assertEqual(data["msgs"][t["m"]["0"]], "same error")
+        self.assertEqual(data["msgs"][t["o"]["0"]], "tests/test_t.py:10")
         self.assertEqual(t["m"]["0"], t["m"]["1"])  # identical details stored once
         self.assertEqual(data["msgs"][t["lf"]],
                          "Failure reasons:\n  2\u00d7 same error  at tests/test_t.py:10")
+
+    def test_html_panel_markup_precedes_page_script(self):
+        # The page script runs where it appears and looks up the detail panel by id, so
+        # the panel has to come first (otherwise nothing renders at all).
+        h = self.history({"t": ["passed", "failed"]})
+        page = render_html(h)
+        self.assertLess(page.index('<aside id="detail"'), page.index("<script>"))
+        for el in ('id="dbody"', 'id="dprev"', 'id="dnext"', 'id="dclose"', 'id="dpos"'):
+            self.assertLess(page.index(el), page.index("<script>"), el)
 
     def test_html_empty(self):
         from allure_history.analysis import History

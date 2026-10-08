@@ -25,7 +25,8 @@ class Cell:
     attempts: list[str] = field(default_factory=list)
     message: str = ""
     location: str = ""
-    when: Optional[int] = None  # start time; set in per-execution mode
+    when: Optional[int] = None  # start time of the (final) execution
+    stop: Optional[int] = None
 
     @property
     def retried(self) -> bool:
@@ -137,6 +138,8 @@ def build_history(runs: list[Run], min_runs: int = 1) -> History:
                     attempts=[a.status for a in tr.attempts],
                     message=tr.message,
                     location=tr.location,
+                    when=tr.attempts[-1].start,
+                    stop=tr.attempts[-1].stop,
                 ))
         th = TestHistory(key=key, name=name, cells=cells)
         _score(th)
@@ -181,7 +184,7 @@ def build_execution_history(runs: list[Run], last: int = 0, min_executions: int 
     for key, attempts in timelines.items():
         cells = [Cell(status=None) for _ in range(width - len(attempts))]
         cells += [Cell(status=a.status, attempts=[a.status], message=a.message,
-                       location=a.location, when=a.start) for a in attempts]
+                       location=a.location, when=a.start, stop=a.stop) for a in attempts]
         th = TestHistory(key=key, name=names[key], cells=cells)
         _score(th)
         tests.append(th)

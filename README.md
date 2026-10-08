@@ -40,6 +40,7 @@ The HTML report is a single self-contained file. It shows the full matrix with c
 - sort by flips, rate, or failures
 - hover a cell to see where it failed (`tests/test_api.py:42`), the full failure message (including pytest's assertion diff), and the order of retries
 - hover a test name to see its distinct failure reasons with counts. One repeated reason usually means one root cause; several different ones point at something environmental
+- **click a cell** to open that one result in a side panel: status, run (with a link to it), exact start time and duration, retries, where it failed, and the full failure message as copyable text. Use the ←/→ buttons or arrow keys to step through that test's other results; Esc closes the panel. Click a test name for its summary and failure reasons.
 
 ### One folder with results from many runs
 

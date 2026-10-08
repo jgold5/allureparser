@@ -288,6 +288,37 @@ td.c.retry::after { content: ""; position: absolute; top: 2px; right: 2px; width
   border-radius: 8px;
   background: var(--broken); color: var(--cell-fg); margin-right: 6px; vertical-align: 1px; }
 .empty { padding: 24px; color: var(--muted); }
+td.c { cursor: pointer; }
+td.c.none { cursor: default; }
+td.c.sel { outline: 2px solid var(--fg); outline-offset: -2px; }
+td.name { cursor: pointer; }
+#detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 100vw);
+  background: var(--bg); border-left: 1px solid var(--border); z-index: 10;
+  box-shadow: -6px 0 24px rgba(0, 0, 0, .18); display: flex; flex-direction: column; }
+#detail[hidden] { display: none; }
+.dhead { display: flex; gap: 6px; align-items: center; padding: 10px 12px;
+  border-bottom: 1px solid var(--border); }
+.dhead button { border: 1px solid var(--border); background: var(--head); color: var(--fg);
+  border-radius: 6px; min-width: 32px; height: 30px; cursor: pointer; font-size: 15px; }
+.dhead button:disabled { opacity: .4; cursor: default; }
+#dclose { margin-left: auto; }
+#dpos { font-size: 12px; }
+#dbody { padding: 14px 16px; overflow: auto; }
+#dbody h3 { font-size: 15px; margin: 8px 0 12px; overflow-wrap: anywhere; font-weight: 600; }
+#dbody dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 0 0 14px; }
+#dbody dt { color: var(--muted); font-size: 12px; padding-top: 1px; }
+#dbody dd { margin: 0; overflow-wrap: anywhere; }
+#dbody pre { background: var(--head); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; margin: 0;
+  max-height: 50vh; overflow: auto; }
+#dbody a, #dbody .link { color: inherit; text-decoration: underline; cursor: pointer;
+  background: none; border: 0; padding: 0; font: inherit; }
+#dbody .sec { font-size: 12px; color: var(--muted); font-weight: 600; margin: 14px 0 6px; }
+#dbody .muted, .dhead .muted { color: var(--muted); }
+@media (max-width: 600px) {
+  #detail { top: auto; height: 70vh; width: 100vw; border-left: 0;
+    border-top: 1px solid var(--border); }
+}
 .runs { margin-top: 28px; }
 .runs h2 { font-size: 17px; margin: 0 0 4px; }
 .runs .note { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
@@ -333,6 +364,7 @@ _JS = """
   D.tests.forEach(t => { t.l = t.n.toLowerCase(); });
 
   let sorted = D.tests.slice(), view = sorted, rowH = 23, measured = false, first = -1, last = -1;
+  let sel = null;  // {t, c}: the cell shown in the detail panel
 
   function spacer() {
     const tr = document.createElement('tr'), td = document.createElement('td');
@@ -345,6 +377,32 @@ _JS = """
     el.className = cls; el.textContent = text;
     if (title) el.title = title;
     return el;
+  }
+
+  // ---- time helpers (UTC, like the rest of the report)
+  function utc(ms, secs) {
+    const iso = new Date(ms).toISOString();
+    return iso.slice(0, 10) + ' ' + iso.slice(11, secs ? 19 : 16) + ' UTC';
+  }
+  function startMs(t, i) {
+    const v = t.t && t.t[i];
+    return v === null || v === undefined ? null : D.t0 + v * 1000;
+  }
+  function whenText(t, i) {
+    const ms = startMs(t, i), u = t.u && t.u[i];
+    const parts = [];
+    if (ms !== null) parts.push(utc(ms, false));
+    if (u) parts.push('run #' + u);
+    return parts.join(' \u00b7 ');
+  }
+  function dur(ms) {
+    if (ms === null || ms === undefined) return '';
+    if (ms < 1000) return ms + ' ms';
+    const s = ms / 1000;
+    if (s < 60) return s.toFixed(s < 10 ? 2 : 1) + ' s';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + String(Math.round(s % 60)).padStart(2, '0') + 's';
+    return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
   }
 
   function row(t) {
@@ -362,14 +420,23 @@ _JS = """
     for (let i = 0; i < t.s.length; i++) {
       const ch = t.s[i], tip = [D.runs[i], NAME[ch]];
       let cls = 'c ' + CLS[ch];
+      if (sel && sel.t === t && sel.c === i) cls += ' sel';
+      const when = whenText(t, i);
+      if (when) tip.push(when);
       const att = t.a && t.a[i];
       if (att) { cls += ' retry'; tip.push('attempts: ' + att); }
+      const o = t.o && t.o[i];
+      if (o !== undefined) tip.push('at ' + D.msgs[o]);
       const m = t.m && t.m[i];
       if (m !== undefined) tip.push(D.msgs[m]);
+      let cell;
       // Per-execution mode: '.' just pads shorter timelines, so leave it blank.
-      if (ch === '.' && D.pe) tr.appendChild(td(cls, '', ''));
-      else tr.appendChild(td(cls, ch, tip.join('\\n')));
+      if (ch === '.' && D.pe) cell = td(cls, '', '');
+      else cell = td(cls, ch, tip.join('\\n'));
+      cell.dataset.c = i;
+      tr.appendChild(cell);
     }
+    tr.dataset.i = t.i;
     tr.dataset.name = t.l;
     tr.dataset.flaky = t.k ? '1' : '0';
     return tr;
@@ -447,6 +514,150 @@ _JS = """
   window.addEventListener('resize', () => { viewportH = 0; render(true); });
   q.addEventListener('input', applySoon);
   only.addEventListener('change', () => apply(true));
+
+  // ---- detail panel: click a cell for that execution, a test name for the test
+  const panel = document.getElementById('detail');
+  const body = document.getElementById('dbody');
+  const prevB = document.getElementById('dprev'), nextB = document.getElementById('dnext');
+  const posEl = document.getElementById('dpos');
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  function field(dl, label, value) {
+    if (value === undefined || value === null || value === '') return;
+    dl.appendChild(el('dt', '', label));
+    const dd = el('dd');
+    if (value instanceof Node) dd.appendChild(value); else dd.textContent = value;
+    dl.appendChild(dd);
+  }
+  function chip(code) {
+    return el('span', 'chip ' + CLS[code], NAME[code]);
+  }
+  function present(t) {
+    const out = [];
+    for (let i = 0; i < t.s.length; i++) if (t.s[i] !== '.') out.push(i);
+    return out;
+  }
+  function runLink(t, i) {
+    const u = t.u && t.u[i];
+    if (u) {
+      const b = el('button', 'link', 'Run #' + u + ' of ' + D.nruns);
+      b.type = 'button';
+      b.addEventListener('click', () => {
+        const d = document.getElementById('run-' + u);
+        if (d) { d.open = true; d.scrollIntoView({block: 'start'}); }
+      });
+      return b;
+    }
+    if (D.pe) return null;
+    const url = D.urls[i];
+    if (url) {
+      const a = el('a', '', D.runs[i]);
+      a.href = url; a.target = '_blank'; a.rel = 'noopener';
+      return a;
+    }
+    return D.runs[i];
+  }
+
+  function markSelected() {
+    tbody.querySelectorAll('td.c.sel').forEach(c => c.classList.remove('sel'));
+    if (!sel) return;
+    const tr = tbody.querySelector('tr[data-i="' + sel.t.i + '"]');
+    const c = tr && tr.querySelector('td.c[data-c="' + sel.c + '"]');
+    if (c) c.classList.add('sel');
+  }
+
+  function showCell(t, i) {
+    sel = {t: t, c: i};
+    const code = t.s[i];
+    body.replaceChildren();
+    const h = el('h3', '', t.n);
+    body.appendChild(chip(code));
+    body.appendChild(h);
+    const dl = el('dl');
+    field(dl, 'Run', runLink(t, i));
+    const ms = startMs(t, i);
+    field(dl, 'Started', ms !== null ? utc(ms, true) : '');
+    field(dl, 'Duration', dur(t.d && t.d[i]));
+    field(dl, 'Attempts', t.a && t.a[i]);
+    field(dl, 'Failed at', t.o && t.o[i] !== undefined ? D.msgs[t.o[i]] : '');
+    body.appendChild(dl);
+    if (t.m && t.m[i] !== undefined) {
+      body.appendChild(el('div', 'sec', 'Message'));
+      body.appendChild(el('pre', '', D.msgs[t.m[i]]));
+    }
+    body.appendChild(el('div', 'sec', 'This test overall'));
+    const sdl = el('dl');
+    field(sdl, 'Flips', t.f + ' (' + Math.round(t.r * 100) + '% of chances)');
+    field(sdl, 'Fails', t.x + ' of ' + t.p);
+    body.appendChild(sdl);
+    const idx = present(t), k = idx.indexOf(i);
+    posEl.textContent = (D.pe ? 'Execution ' : 'Run ') + (k + 1) + ' of ' + idx.length;
+    prevB.disabled = k <= 0; nextB.disabled = k >= idx.length - 1;
+    prevB.hidden = nextB.hidden = false;
+    openPanel();
+    markSelected();
+  }
+
+  function showTest(t) {
+    sel = null;
+    body.replaceChildren();
+    body.appendChild(el('h3', '', t.n));
+    const dl = el('dl');
+    field(dl, 'Flaky', t.k ? 'yes' : 'no');
+    field(dl, 'Flips', t.f + ' (' + Math.round(t.r * 100) + '% of chances)');
+    field(dl, 'Fails', t.x + ' of ' + t.p + (D.pe ? ' executions' : ' runs'));
+    body.appendChild(dl);
+    if (t.lf >= 0) body.appendChild(el('pre', '', D.msgs[t.lf]));
+    const idx = present(t);
+    if (idx.length) {
+      const b = el('button', 'link', 'Open the latest ' + (D.pe ? 'execution' : 'run'));
+      b.type = 'button';
+      b.addEventListener('click', () => showCell(t, idx[idx.length - 1]));
+      const p = el('p'); p.appendChild(b); body.appendChild(p);
+    }
+    posEl.textContent = '';
+    prevB.hidden = nextB.hidden = true;
+    openPanel();
+    markSelected();
+  }
+
+  function openPanel() {
+    panel.hidden = false;
+    document.getElementById('dclose').focus({preventScroll: true});
+  }
+  function closePanel() {
+    panel.hidden = true; sel = null; markSelected();
+  }
+  function step(dir) {
+    if (!sel) return;
+    const idx = present(sel.t), k = idx.indexOf(sel.c) + dir;
+    if (k >= 0 && k < idx.length) showCell(sel.t, idx[k]);
+  }
+
+  tbody.addEventListener('click', e => {
+    const tr = e.target.closest('tr[data-i]');
+    if (!tr) return;
+    const t = D.tests[+tr.dataset.i];
+    const c = e.target.closest('td.c');
+    if (c) { if (t.s[+c.dataset.c] !== '.') showCell(t, +c.dataset.c); }
+    else if (e.target.closest('td.name')) showTest(t);
+  });
+  prevB.addEventListener('click', () => step(-1));
+  nextB.addEventListener('click', () => step(1));
+  document.getElementById('dclose').addEventListener('click', closePanel);
+  document.addEventListener('keydown', e => {
+    if (panel.hidden) return;
+    if (e.key === 'Escape') closePanel();
+    else if (e.target === q) return;
+    else if (e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { step(1); e.preventDefault(); }
+  });
+
   apply(false);
 })();
 """
@@ -472,21 +683,23 @@ def _page_data(h: History) -> dict:
 
     run_of = {(e.key, e.attempt.start, e.attempt.status): r.index
               for r in h.detected_runs for e in r.executions}
+    starts = [c.when for t in h.tests for c in t.cells if c.when is not None]
+    t0 = (min(starts) // 1000) * 1000 if starts else 0
     tests = []
     for rank, t in enumerate(h.tests):
-        attempts, messages = {}, {}
+        attempts, messages, locations = {}, {}, {}
+        times, durations, run_nos = [], [], []
         for i, c in enumerate(t.cells):
             if c.retried:
                 attempts[i] = " → ".join(c.attempts)
-            when = _run_time(c.when) if c.when else ""
-            run_no = run_of.get((t.key, c.when, c.status)) if c.status else None
-            if run_no:
-                when = f"{when} \u00b7 run #{run_no}" if when else f"run #{run_no}"
-            detail = "\n".join(x for x in (when,
-                                           f"at {c.location}" if c.location else "",
-                                           c.message) if x)
-            if detail:
-                messages[i] = msg(detail)
+            if c.message:
+                messages[i] = msg(c.message)
+            if c.location:
+                locations[i] = msg(c.location)
+            times.append((c.when - t0) // 1000 if c.when is not None else None)
+            durations.append(c.stop - c.when if c.when is not None and c.stop is not None
+                             and c.stop >= c.when else None)
+            run_nos.append(run_of.get((t.key, c.when, c.status)) if c.status else None)
         entry = {
             "i": rank, "n": t.name, "k": int(t.is_flaky), "f": t.flips,
             "r": round(t.flip_rate, 4), "x": t.counts["failed"] + t.counts["broken"],
@@ -497,9 +710,19 @@ def _page_data(h: History) -> dict:
             entry["a"] = attempts
         if messages:
             entry["m"] = messages
+        if locations:
+            entry["o"] = locations
+        # Dense per-cell arrays, only when the test has any data for them
+        if any(v is not None for v in times):
+            entry["t"] = times      # start, seconds after t0
+        if any(v is not None for v in durations):
+            entry["d"] = durations  # milliseconds
+        if any(run_nos):
+            entry["u"] = run_nos    # detected run number (per-execution mode)
         tests.append(entry)
-    return {"runs": [r.label for r in h.runs], "tests": tests, "msgs": msgs,
-            "pe": int(h.per_execution)}
+    return {"runs": [r.label for r in h.runs], "urls": [r.url for r in h.runs],
+            "tests": tests, "msgs": msgs, "pe": int(h.per_execution), "t0": t0,
+            "nruns": len(h.detected_runs)}
 
 
 def _reasons_text(t: TestHistory, limit: int = 5) -> str:
@@ -558,7 +781,7 @@ def _runs_html(h: History) -> str:
         if not body:
             body.append('<ul><li class="loc">Everything passed.</li></ul>')
         items.append(
-            f'<details><summary><span class="idx">#{r.index}</span>'
+            f'<details id="run-{r.index}"><summary><span class="idx">#{r.index}</span>'
             f'<span class="when">{started}</span>'
             f'<span class="muted">{_e(_duration(s["duration"]))}</span>'
             f'<span>{len(s["final"])} tests</span>{chips}{retried}'
@@ -641,6 +864,16 @@ def render_html(h: History, title: str = "Test History") -> str:
   <span class="legend">{legend}</span>
   <span style="color:var(--muted)"><span id="shown">{len(h.tests)}</span> shown</span>
 </div>
+<!-- before {table}: the page script inside it looks this panel up -->
+<aside id="detail" role="dialog" aria-label="Execution details" hidden>
+  <div class="dhead">
+    <button type="button" id="dprev" title="Previous execution of this test (&larr;)">&larr;</button>
+    <button type="button" id="dnext" title="Next execution of this test (&rarr;)">&rarr;</button>
+    <span id="dpos" class="muted"></span>
+    <button type="button" id="dclose" title="Close (Esc)">&times;</button>
+  </div>
+  <div id="dbody"></div>
+</aside>
 {table}
 {_runs_html(h)}
 </body>
