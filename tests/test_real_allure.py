@@ -163,6 +163,40 @@ class RealAllurePytestTests(unittest.TestCase):
                     for k, v in TRUTH.items()}
         self.assertEqual(got, expected)
 
+    def test_runs_recovered_from_one_folder(self):
+        """All 6 runs' results in one folder: the runs are found again, with the right
+        outcome counts."""
+        import shutil
+        from allure_history.runs import detect_runs
+        mixed = Path(self.tmp.name) / "mixed-runs"
+        mixed.mkdir()
+        for f in (Path(self.tmp.name) / "runs").glob("run-*/*-result.json"):
+            shutil.copy(f, mixed / f.name)
+        runs = detect_runs(load_runs([mixed]))
+        self.assertEqual(len(runs), 6)
+        for r in runs:
+            expected = {}
+            for v in TRUTH.values():
+                if v[r.index - 1] != "-":
+                    status = STATUS[v[r.index - 1]]
+                    expected[status] = expected.get(status, 0) + 1
+            with self.subTest(run=r.index):
+                self.assertEqual({k: n for k, n in r.counts().items() if n}, expected)
+
+    @unittest.skipUnless(_have("xdist"), "needs pytest-xdist")
+    def test_parallel_run_is_one_run(self):
+        from allure_history.runs import detect_runs
+        out = Path(self.tmp.name) / "xdist-results"
+        env = {"TRUTH": json.dumps(TRUTH), "RUN": "3", "STATE_DIR": str(Path(self.tmp.name) / "state"),
+               "PATH": "", "PYTHONDONTWRITEBYTECODE": "1"}
+        subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-n", "3",
+                        str(Path(self.tmp.name) / "test_suite.py"), f"--alluredir={out}"],
+                       cwd=self.tmp.name, env=env, capture_output=True, check=False, timeout=120)
+        runs = detect_runs(load_runs([out]))
+        self.assertEqual(len(runs), 1)
+        self.assertGreater(runs[0].workers, 1)
+        self.assertEqual(len(runs[0].final()), sum(v[3] != "-" for v in TRUTH.values()))
+
     def test_ranking(self):
         ranked = [self.truth_key(t.name) for t in self.history.flaky]
         self.assertEqual(ranked[0], "test_alternating")  # 5 flips

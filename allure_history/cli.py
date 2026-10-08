@@ -10,6 +10,7 @@ from pathlib import Path
 from . import __version__
 from .analysis import build_execution_history, build_history
 from .loader import _url, load_run, load_runs
+from .runs import detect_runs
 from .render import render_csv, render_html, render_json, render_text
 from .snapshot import SUFFIX, default_name, prune, write_snapshot
 
@@ -56,6 +57,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "per-execution mode (default 1)")
     p.add_argument("--top", type=non_negative, default=20, metavar="N",
                    help="how many flaky tests to print (0 = all, default 20)")
+    p.add_argument("--runs", type=non_negative, default=15, metavar="N",
+                   help="per-execution mode: how many of the most recent runs to list in the "
+                        "terminal (0 = all, default 15); the HTML lists every run")
     p.add_argument("--all", action="store_true",
                    help="print all tests in the terminal table, not just flaky ones")
     p.add_argument("--title", default="Test History", help="title for the HTML report")
@@ -159,6 +163,7 @@ def main(argv=None) -> int:
             print("note: one results folder, so each test's executions are ordered by time "
                   "(use --per-run to treat it as a single run)", file=sys.stderr)
         history = build_execution_history(runs, last=args.last, min_executions=args.min_runs)
+        history.detected_runs = detect_runs(runs)
     else:
         if args.last > 0:
             runs = runs[-args.last:]
@@ -177,7 +182,7 @@ def main(argv=None) -> int:
                 return 1
             print(f"wrote {path}", file=sys.stderr)
 
-    print(render_text(history, top=args.top, flaky_only=not args.all))
+    print(render_text(history, top=args.top, flaky_only=not args.all, runs_shown=args.runs))
     if args.fail_on_flaky and history.flaky:
         return 2
     return 0

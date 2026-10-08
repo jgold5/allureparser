@@ -39,7 +39,8 @@ def to_dict(run: Run) -> dict:
         "start": run.start,
         "tests": [
             {"k": t.key, "n": t.name,
-             "a": [[a.status, a.start, a.stop, a.message, a.location] for a in t.attempts]}
+             "a": [[a.status, a.start, a.stop, a.message, a.location, a.session]
+                   for a in t.attempts]}
             for t in run.tests.values()
         ],
     }
@@ -101,10 +102,11 @@ def read_snapshot(path: Path) -> Optional[Run]:
         for a in raw_attempts:
             if not isinstance(a, list) or not a:
                 continue
-            a = (a + [None] * 5)[:5]
+            a = (a + [None] * 6)[:6]  # session (6th) was added later; older files lack it
             status = a[0] if a[0] in STATUSES else "unknown"
             attempts.append(Attempt(status=status, start=_time(a[1]), stop=_time(a[2]),
-                                    message=clean_message(a[3]), location=_text(a[4])[:300]))
+                                    message=clean_message(a[3]), location=_text(a[4])[:300],
+                                    session=_text(a[5])[:200]))
         if attempts:
             run.tests[key] = TestRun(key=key, name=_text(entry.get("n")) or key,
                                      attempts=attempts)

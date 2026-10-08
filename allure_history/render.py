@@ -9,6 +9,7 @@ import json
 from datetime import datetime, timezone
 
 from .analysis import History, TestHistory
+from .loader import first_line
 
 GLYPH = {"passed": "P", "failed": "F", "broken": "B", "skipped": "S", "unknown": "?", None: "."}
 
@@ -38,7 +39,59 @@ def strip(t: TestHistory, limit: int = 0) -> str:
 # ---------------------------------------------------------------- text
 
 
-def render_text(h: History, top: int = 20, flaky_only: bool = True) -> str:
+def _duration(ms) -> str:
+    if not isinstance(ms, (int, float)) or ms < 0:
+        return ""
+    s = int(ms // 1000)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60:02d}s"
+    return f"{s // 3600}h {s % 3600 // 60:02d}m"
+
+
+def _run_summary(r) -> dict:
+    """Counts and noteworthy tests (failed/broken, or retried) of one detected run."""
+    final = r.final()
+    failures, retried = [], []
+    for execs in final.values():
+        last = execs[-1]
+        statuses = [e.attempt.status for e in execs]
+        if last.attempt.status in ("failed", "broken"):
+            failures.append((last, statuses))
+        elif len(execs) > 1:
+            retried.append((last, statuses))
+    failures.sort(key=lambda x: x[0].name)
+    retried.sort(key=lambda x: x[0].name)
+    duration = r.stop - r.start if r.start is not None and r.stop is not None else None
+    return {"final": final, "failures": failures, "retried": retried, "duration": duration,
+            "counts": r.counts()}
+
+
+def _runs_text(h: History, shown: int) -> list[str]:
+    runs = h.detected_runs
+    if not runs:
+        return []
+    picked = runs[-shown:] if shown else runs
+    lines = ["", f"Runs found in the results: {len(runs)} (by pytest process; "
+                 f"parallel workers count as one run)",
+             f"{'run':>5}  {'started (UTC)':<16}  {'duration':>8}  {'tests':>5}  {'pass':>5}  "
+             f"{'fail':>5}  {'broken':>6}  {'skip':>5}  {'retried':>7}  workers"]
+    for r in picked:
+        s = _run_summary(r)
+        c = s["counts"]
+        started = _run_time(r.start).replace(" UTC", "") if r.start else "?"
+        lines.append(f"{'#' + str(r.index):>5}  {started:<16}  {_duration(s['duration']):>8}  "
+                     f"{len(s['final']):>5}  {c['passed']:>5}  {c['failed']:>5}  "
+                     f"{c['broken']:>6}  {c['skipped']:>5}  {len(s['retried']):>7}  "
+                     f"{r.workers}{' on ' + r.host if r.host else ''}")
+    if shown and len(runs) > shown:
+        lines.append(f"... {len(runs) - shown} earlier runs (use --runs 0 to list all, or see "
+                     f"the HTML report for each run's failures)")
+    return lines
+
+
+def render_text(h: History, top: int = 20, flaky_only: bool = True, runs_shown: int = 15) -> str:
     rows = h.flaky if flaky_only else h.tests
     if h.per_execution:
         lines = [
@@ -56,7 +109,7 @@ def render_text(h: History, top: int = 20, flaky_only: bool = True) -> str:
         ]
     if not rows:
         lines.append("No flaky tests found." if flaky_only else "No tests found.")
-        return "\n".join(lines)
+        return "\n".join(lines + _runs_text(h, runs_shown))
 
     shown = rows[:top] if top else rows
     if h.per_execution:
@@ -76,7 +129,7 @@ def render_text(h: History, top: int = 20, flaky_only: bool = True) -> str:
             )
     if top and len(rows) > top:
         lines.append(f"... and {len(rows) - top} more (use --top 0 to show all)")
-    return "\n".join(lines)
+    return "\n".join(lines + _runs_text(h, runs_shown))
 
 
 # ---------------------------------------------------------------- csv
@@ -143,8 +196,29 @@ def to_dict(h: History) -> dict:
     }
 
 
+def _runs_dict(h: History) -> list[dict]:
+    out = []
+    for r in h.detected_runs:
+        s = _run_summary(r)
+        out.append({
+            "index": r.index, "start": r.start, "stop": r.stop, "duration_ms": s["duration"],
+            "host": r.host, "workers": r.workers, "tests": len(s["final"]),
+            "counts": s["counts"], "retried": len(s["retried"]),
+            "failures": [{"name": e.name, "status": e.attempt.status,
+                          "message": first_line(e.attempt.message),
+                          "location": e.attempt.location, "attempts": st}
+                         for e, st in s["failures"]],
+            "retried_tests": [{"name": e.name, "status": e.attempt.status, "attempts": st}
+                              for e, st in s["retried"]],
+        })
+    return out
+
+
 def render_json(h: History) -> str:
-    return json.dumps(to_dict(h), indent=2)
+    data = to_dict(h)
+    if h.per_execution:
+        data["runs_detected"] = _runs_dict(h)
+    return json.dumps(data, indent=2)
 
 
 # ---------------------------------------------------------------- html
@@ -214,6 +288,24 @@ td.c.retry::after { content: ""; position: absolute; top: 2px; right: 2px; width
   border-radius: 8px;
   background: var(--broken); color: var(--cell-fg); margin-right: 6px; vertical-align: 1px; }
 .empty { padding: 24px; color: var(--muted); }
+.runs { margin-top: 28px; }
+.runs h2 { font-size: 17px; margin: 0 0 4px; }
+.runs .note { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+.runs details { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; }
+.runs summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 12px; flex-wrap: wrap;
+  align-items: center; font-variant-numeric: tabular-nums; }
+.runs summary .idx { font-weight: 600; min-width: 44px; }
+.runs summary .when { min-width: 150px; }
+.runs summary .muted { color: var(--muted); }
+.chip { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px;
+  color: var(--cell-fg); line-height: 18px; }
+.chip.passed { background: var(--passed); } .chip.failed { background: var(--failed); }
+.chip.broken { background: var(--broken); } .chip.skipped { background: var(--skipped); }
+.runs ul { margin: 0; padding: 4px 12px 10px 30px; }
+.runs li { margin: 3px 0; overflow-wrap: anywhere; }
+.runs li .loc { color: var(--muted); font-size: 12px; }
+.runs li .msg { color: var(--muted); font-size: 12px; display: block; }
+.runs .sub-h { padding: 2px 12px; font-size: 12px; font-weight: 600; color: var(--muted); }
 tbody tr:not(.spacer) { height: 23px; }
 tr.spacer td { padding: 0; border: 0; height: 0; }
 tr.spacer:hover td { background: none; }
@@ -378,13 +470,19 @@ def _page_data(h: History) -> dict:
             msgs.append(text)
         return msg_index[text]
 
+    run_of = {(e.key, e.attempt.start, e.attempt.status): r.index
+              for r in h.detected_runs for e in r.executions}
     tests = []
     for rank, t in enumerate(h.tests):
         attempts, messages = {}, {}
         for i, c in enumerate(t.cells):
             if c.retried:
                 attempts[i] = " → ".join(c.attempts)
-            detail = "\n".join(x for x in (_run_time(c.when) if c.when else "",
+            when = _run_time(c.when) if c.when else ""
+            run_no = run_of.get((t.key, c.when, c.status)) if c.status else None
+            if run_no:
+                when = f"{when} \u00b7 run #{run_no}" if when else f"run #{run_no}"
+            detail = "\n".join(x for x in (when,
                                            f"at {c.location}" if c.location else "",
                                            c.message) if x)
             if detail:
@@ -417,6 +515,58 @@ def _reasons_text(t: TestHistory, limit: int = 5) -> str:
 def _script_json(data) -> str:
     # Escaping "<" keeps "</script>" or "<!--" inside test names from ending the block.
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False).replace("<", "\\u003c")
+
+
+_RUN_LIST_LIMIT = 200
+
+
+def _runs_html(h: History) -> str:
+    runs = h.detected_runs
+    if not runs:
+        return ""
+    items = []
+    for r in reversed(runs):  # newest first
+        s = _run_summary(r)
+        c = s["counts"]
+        chips = "".join(f'<span class="chip {k}" title="{k}">{c[k]} {k}</span>'
+                        for k in ("passed", "failed", "broken", "skipped") if c[k])
+        started = _e(_run_time(r.start)) if r.start else "unknown time"
+        workers = f"{r.workers} workers" if r.workers > 1 else "1 process"
+        where = f" on {_e(r.host)}" if r.host else ""
+        retried = (f'<span class="muted">{len(s["retried"])} passed after retry</span>'
+                   if s["retried"] else "")
+        body = []
+        if s["failures"]:
+            body.append('<div class="sub-h">Failed / broken</div><ul>')
+            for e, st in s["failures"][:_RUN_LIST_LIMIT]:
+                a = e.attempt
+                loc = f' <span class="loc">at {_e(a.location)}</span>' if a.location else ""
+                msg = (f'<span class="msg" title="{_e(a.message)}">{_e(first_line(a.message))}</span>'
+                       if a.message else "")
+                tries = f' <span class="loc">({_e(" → ".join(st))})</span>' if len(st) > 1 else ""
+                body.append(f'<li><span class="chip {a.status}">{a.status}</span> '
+                            f'{_e(e.name)}{loc}{tries}{msg}</li>')
+            if len(s["failures"]) > _RUN_LIST_LIMIT:
+                body.append(f'<li class="loc">… and {len(s["failures"]) - _RUN_LIST_LIMIT} more '
+                            f'(see the JSON output)</li>')
+            body.append("</ul>")
+        if s["retried"]:
+            body.append('<div class="sub-h">Passed after retry</div><ul>')
+            for e, st in s["retried"][:_RUN_LIST_LIMIT]:
+                body.append(f'<li>{_e(e.name)} <span class="loc">({_e(" → ".join(st))})</span></li>')
+            body.append("</ul>")
+        if not body:
+            body.append('<ul><li class="loc">Everything passed.</li></ul>')
+        items.append(
+            f'<details><summary><span class="idx">#{r.index}</span>'
+            f'<span class="when">{started}</span>'
+            f'<span class="muted">{_e(_duration(s["duration"]))}</span>'
+            f'<span>{len(s["final"])} tests</span>{chips}{retried}'
+            f'<span class="muted">{workers}{where}</span></summary>{"".join(body)}</details>')
+    return (f'<section class="runs" id="runs"><h2>Runs ({len(runs)})</h2>'
+            f'<div class="note">Found by the pytest process that wrote each result; parallel '
+            f'workers count as one run. Newest first. Click a run to see what failed.</div>'
+            f'{"".join(items)}</section>')
 
 
 def render_html(h: History, title: str = "Test History") -> str:
@@ -458,6 +608,9 @@ def render_html(h: History, title: str = "Test History") -> str:
         heading = ("Each row is one test&rsquo;s executions, oldest &rarr; newest; "
                    "the latest is in the rightmost column")
         first_stat = f'<div class="stat"><b>{h.executions}</b><span>executions</span></div>'
+        if h.detected_runs:
+            first_stat += (f'<a class="stat" href="#runs" style="color:inherit;text-decoration:none">'
+                           f'<b>{len(h.detected_runs)}</b><span>runs &darr;</span></a>')
     else:
         starts = [r.start for r in h.runs if r.start]
         heading = "Runs oldest &rarr; newest, left to right"
@@ -489,6 +642,7 @@ def render_html(h: History, title: str = "Test History") -> str:
   <span style="color:var(--muted)"><span id="shown">{len(h.tests)}</span> shown</span>
 </div>
 {table}
+{_runs_html(h)}
 </body>
 </html>
 """

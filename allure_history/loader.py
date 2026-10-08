@@ -57,6 +57,7 @@ class Attempt:
     stop: Optional[int]
     message: str = ""   # failure message, possibly multi-line (capped)
     location: str = ""  # where it failed, e.g. "tests/test_api.py:42"
+    session: str = ""   # "host:pid" of the pytest process that ran it, if recorded
 
 
 @dataclass
@@ -177,6 +178,23 @@ def failure_location(trace) -> str:
     return _text(f"{m['file']}:{m['line']}")[:300] if m else ""
 
 
+def session_id(result: dict) -> str:
+    """'host:pid' of the process that produced a result. allure-pytest records the
+    host and a 'thread' label of the form '<pid>-<thread name>' on every result; each
+    pytest run (and each xdist worker) is its own process."""
+    labels = result.get("labels")
+    host = pid = ""
+    for label in labels if isinstance(labels, list) else []:
+        if not isinstance(label, dict):
+            continue
+        if label.get("name") == "host":
+            host = _text(label.get("value"))
+        elif label.get("name") == "thread":
+            m = re.match(r"(\d+)-", _text(label.get("value")))
+            pid = m.group(1) if m else ""
+    return f"{host}:{pid}" if host and pid else ""
+
+
 def is_results_dir(path: Path) -> bool:
     return path.is_dir() and any(path.glob("*-result.json"))
 
@@ -288,6 +306,7 @@ def load_run(path: Path, run_id: Optional[str] = None) -> Run:
             stop=_time(result.get("stop")),
             message=clean_message(details.get("message")),
             location=failure_location(details.get("trace")),
+            session=session_id(result),
         )
         key = identity_key(result)
         grouped.setdefault(key, (display_name(result), []))[1].append(attempt)

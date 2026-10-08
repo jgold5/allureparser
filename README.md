@@ -55,6 +55,13 @@ With a single folder, the tool works **per test execution**. Every result file i
 - `--per-run` treats the folder as a single run instead. `--per-execution` pools several folders or snapshots into per-test timelines.
 - Snapshots keep every execution, so `allure-history snapshot allure-results -o history/` also works for a folder like this.
 
+**Seeing individual runs.** The folder doesn't record where one run ends and the next begins, so the tool works it out. `allure-pytest` records the machine and the pytest process ID on every result, and each pytest run is its own process. The tool groups results that way, and treats the workers of a parallel (`pytest -n`) run as one run. If a process ID gets reused (common in containers), the tool still splits the runs, because the same test shows up again.
+
+- The terminal lists the 15 most recent runs, with start time, duration, and pass/fail/broken/skipped/retried counts. Use `--runs N` to show a different number, or `--runs 0` for all.
+- The HTML report has a **Runs** section, newest first. Click a run to see which tests failed, where, and why, plus which tests passed only after a retry. Hovering a cell in the matrix shows which run that execution belonged to.
+- `--json` output includes `runs_detected` with the same information.
+- Results without that machine and process information are grouped by the folder or snapshot they came from.
+
 ### Options
 
 | Flag | Meaning |
@@ -64,6 +71,7 @@ With a single folder, the tool works **per test execution**. Every result file i
 | `--min-runs N` | Ignore tests that appear in fewer than N runs |
 | `--top N` | Number of flaky tests to print (0 = all) |
 | `--all` | Print every test in the terminal table, not just flaky ones |
+| `--runs N` | Per-execution mode: how many of the most recent runs to list in the terminal (default 15, 0 = all) |
 | `--per-execution` / `--per-run` | Order each test's executions by time, or treat each folder/snapshot as one run. Default: per-execution for a single folder, per-run for several |
 | `--title TEXT` | Title of the HTML report |
 | `--fail-on-flaky` | Exit with code 2 if any flaky test is found (for CI gates). A test that starts failing and keeps failing (`PPPFFF`) has one flip, so it counts too |
